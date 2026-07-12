@@ -143,6 +143,7 @@
     padding: 4px 8px;
     flex-shrink: 0;
   }
+  .btn-ghost.active { background: rgba(212,168,83,0.18); border-radius: 8px; }
 
   .summary-grid {
     display: grid;
@@ -522,6 +523,16 @@
         <div class="calendar-grid" id="calendarGrid"></div>
         <div class="hint" style="text-align:center;margin-top:8px;">有记录的日期会标一个小圆点,点日期看当天详情</div>
       </div>
+    </div>
+
+    <div class="card">
+      <h2><span>消耗汇总</span> <span><button class="btn-ghost active" id="summaryModeWeekBtn">本周</button> <button class="btn-ghost" id="summaryModeMonthBtn">本月</button></span></h2>
+      <div class="calendar-nav">
+        <button id="summaryPrevBtn">‹</button>
+        <span id="summaryRangeLabel"></span>
+        <button id="summaryNextBtn">›</button>
+      </div>
+      <div id="summaryList"></div>
     </div>
 
     <div class="card" id="itemsSettingsCard">
@@ -934,6 +945,7 @@ async function selectCategory(cat) {
   document.getElementById("fieldsManage").style.display = "none";
   editingEntry = null;
   todayInputs = {};
+  summaryAnchorDate = new Date();
 
   const calendarGrid = document.getElementById("calendarGrid");
   calendarGrid.innerHTML = `<div class="empty" style="grid-column:1/-1;">加载中…</div>`;
@@ -1365,6 +1377,8 @@ const ALL_HISTORY_DAYS = 36500; // 约100年,相当于"不限制天数,拿全部
 let historyRowsByDate = {}; // {dateStr: [rows]}
 let calendarViewDate = new Date(); // 日历当前显示的月份
 let currentDayDetailDate = null; // 当前在"某天详情"页看的是哪一天,删除按钮要用
+let summaryMode = "week"; // "消耗汇总"卡片:"week" | "month"
+let summaryAnchorDate = new Date(); // 落在目标周/月里的任意一天,靠它定位区间
 
 async function fetchLog(categoryId, days) {
   return (await apiGet("getLog", { categoryId, days })).log;
@@ -1378,7 +1392,106 @@ function applyLog(rows) {
   });
   calendarViewDate = new Date();
   renderCalendar();
+  renderSummary();
 }
+
+// ---------- 消耗汇总(本周/本月):直接拿"全部记录"已经拉回来的数据在前端汇总,
+// 不用再单独打一次后端请求——同一份 historyRowsByDate,按日期区间筛一遍就行。
+function dateToStr(d) {
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+function startOfWeek(d) {
+  const date = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const day = date.getDay(); // 0=周日
+  const diff = day === 0 ? -6 : 1 - day; // 周一作为一周的开始
+  date.setDate(date.getDate() + diff);
+  return date;
+}
+function endOfWeek(d) {
+  const s = startOfWeek(d);
+  return new Date(s.getFullYear(), s.getMonth(), s.getDate() + 6);
+}
+
+function renderSummary() {
+  const listEl = document.getElementById("summaryList");
+  if (!listEl || !currentCategory) return;
+  let start, end;
+  if (summaryMode === "month") {
+    start = new Date(summaryAnchorDate.getFullYear(), summaryAnchorDate.getMonth(), 1);
+    end = new Date(summaryAnchorDate.getFullYear(), summaryAnchorDate.getMonth() + 1, 0);
+    document.getElementById("summaryRangeLabel").textContent = `${start.getFullYear()}年${start.getMonth() + 1}月`;
+  } else {
+    start = startOfWeek(summaryAnchorDate);
+    end = endOfWeek(summaryAnchorDate);
+    const fmt = (d) => `${d.getMonth() + 1}/${d.getDate()}`;
+    document.getElementById("summaryRangeLabel").textContent = `${fmt(start)} - ${fmt(end)}`;
+  }
+  const startStr = dateToStr(start), endStr = dateToStr(end);
+
+  const totalsByItem = {};
+  const order = [];
+  let grandTotal = 0;
+  Object.keys(historyRowsByDate).forEach(dateStr => {
+    if (dateStr < startStr || dateStr > endStr) return;
+    historyRowsByDate[dateStr].forEach(r => {
+      if (r.usage === null || r.usage === undefined) return;
+      if (!totalsByItem[r.itemId]) {
+        totalsByItem[r.itemId] = { name: r.itemName, usage: 0, costConverted: 0 };
+        order.push(r.itemId);
+      }
+      totalsByItem[r.itemId].usage += Number(r.usage);
+      const it = items.find(x => x.id === r.itemId);
+      const converted = convertAmount(r.cost, it ? it.currency : null);
+      if (converted && converted.ok) { totalsByItem[r.itemId].costConverted += converted.value; grandTotal += converted.value; }
+    });
+  });
+
+  listEl.innerHTML = "";
+  if (order.length === 0) {
+    listEl.innerHTML = `<div class="empty">这段时间没有消耗记录</div>`;
+    return;
+  }
+  order.forEach(itemId => {
+    const t = totalsByItem[itemId];
+    const it = items.find(x => x.id === itemId);
+    const row = document.createElement("div");
+    row.className = "item-line";
+    const tagClass = t.usage < 0 ? "tag restock" : "tag";
+    row.innerHTML = `<span>${t.name} 用了 ${t.usage.toFixed(2)} ${it ? it.unit : ""}</span><span class="${tagClass}">${currencySymbol(settlementCurrency)}${t.costConverted.toFixed(2)}</span>`;
+    listEl.appendChild(row);
+  });
+  const totalRow = document.createElement("div");
+  totalRow.style.cssText = "font-weight:700;border-top:2px solid var(--paper-dim);padding-top:10px;margin-top:4px;";
+  totalRow.innerHTML = `<span>${summaryMode === "month" ? "本月" : "本周"}总消耗</span><span>${currencySymbol(settlementCurrency)}${grandTotal.toFixed(2)}</span>`;
+  listEl.appendChild(totalRow);
+}
+
+document.getElementById("summaryModeWeekBtn").addEventListener("click", () => {
+  summaryMode = "week";
+  summaryAnchorDate = new Date();
+  document.getElementById("summaryModeWeekBtn").classList.add("active");
+  document.getElementById("summaryModeMonthBtn").classList.remove("active");
+  renderSummary();
+});
+document.getElementById("summaryModeMonthBtn").addEventListener("click", () => {
+  summaryMode = "month";
+  summaryAnchorDate = new Date();
+  document.getElementById("summaryModeMonthBtn").classList.add("active");
+  document.getElementById("summaryModeWeekBtn").classList.remove("active");
+  renderSummary();
+});
+document.getElementById("summaryPrevBtn").addEventListener("click", () => {
+  summaryAnchorDate = summaryMode === "month"
+    ? new Date(summaryAnchorDate.getFullYear(), summaryAnchorDate.getMonth() - 1, 1)
+    : new Date(summaryAnchorDate.getFullYear(), summaryAnchorDate.getMonth(), summaryAnchorDate.getDate() - 7);
+  renderSummary();
+});
+document.getElementById("summaryNextBtn").addEventListener("click", () => {
+  summaryAnchorDate = summaryMode === "month"
+    ? new Date(summaryAnchorDate.getFullYear(), summaryAnchorDate.getMonth() + 1, 1)
+    : new Date(summaryAnchorDate.getFullYear(), summaryAnchorDate.getMonth(), summaryAnchorDate.getDate() + 7);
+  renderSummary();
+});
 
 async function loadHistory() {
   try {
