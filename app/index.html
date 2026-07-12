@@ -1172,7 +1172,7 @@ function renderItemRows() {
       : `<small>${currencySymbol(it.currency)}${Number(it.price).toFixed(2)}/${it.unit}</small>`;
     const tr = document.createElement("tr");
     tr.innerHTML = `<td class="item-name-cell">${it.name}${nameHint}</td>` +
-      fields.map(f => `<td><input type="${f.type === "number" ? "number" : "text"}" ${f.type === "number" ? 'step="0.01"' : ""} data-id="${it.id}" data-field="${f.id}"></td>`).join("");
+      fields.map(f => `<td><input type="${f.type === "number" ? "number" : "text"}" ${f.type === "number" ? 'step="1"' : ""} data-id="${it.id}" data-field="${f.id}"></td>`).join("");
     body.appendChild(tr);
   });
 
@@ -1342,7 +1342,7 @@ function editStockFor(item) {
   const currentVal = latestStockCheck[item.id];
   const stockField = fields.find(f => f.id === stockFieldId);
   const label = document.createElement("label");
-  label.innerHTML = `${stockField ? stockField.name : "目前库存"}<input type="number" step="0.01" data-field="${stockFieldId}" value="${currentVal !== undefined ? currentVal : ""}">`;
+  label.innerHTML = `${stockField ? stockField.name : "目前库存"}<input type="number" step="1" data-field="${stockFieldId}" value="${currentVal !== undefined ? currentVal : ""}">`;
   grid.appendChild(label);
   editingEntry = { date: todayStr(), itemId: item.id, itemName: item.name };
   document.getElementById("editStatus").className = "status-line";
@@ -1472,33 +1472,53 @@ function openDayDetail(date, dayRows) {
     listEl.innerHTML = `<div class="empty">这天没有记录</div>`;
     return;
   }
-  let dayTotal = 0;
+  // 按记录人分组:同一天如果有多个人录入/编辑过,分开标注是谁的,而不是混在一起猜
+  const groups = [];
+  const groupByEditor = {};
   dayRows.forEach(r => {
-    const it = items.find(x => x.id === r.itemId);
-    const editedLabel = r.editedAt ? new Date(r.editedAt).toLocaleString("zh-CN", { hour12: false }) : "";
-    let metaLabel = "";
-    if (r.editedBy && editedLabel) metaLabel = `${r.editedBy} 记录于 ${editedLabel}`;
-    else if (r.editedBy) metaLabel = `记录人: ${r.editedBy}`;
-    else if (editedLabel) metaLabel = "编辑于 " + editedLabel;
-    const row = document.createElement("div");
-    row.className = "item-line history-row";
-    if (r.usage !== null && r.usage !== undefined) {
-      const converted = convertAmount(r.cost, it ? it.currency : null);
-      if (converted && converted.ok) dayTotal += converted.value;
-      const tagClass = r.usage < 0 ? "tag restock" : "tag";
-      const tagText = r.usage < 0 ? "看起来补货了" : formatConverted(r.cost, it ? it.currency : null);
-      row.innerHTML = `<span>${r.itemName} 用了 ${Number(r.usage).toFixed(2)} ${it ? it.unit : ""}</span><span class="${tagClass}">${tagText}</span>`;
-    } else {
-      row.innerHTML = `<span>${r.itemName}</span><span class="tag">暂无消耗数据</span>`;
+    const key = r.editedBy || "未知";
+    if (!groupByEditor[key]) {
+      groupByEditor[key] = { editor: key, rows: [] };
+      groups.push(groupByEditor[key]);
     }
-    row.addEventListener("click", () => openEditEntry(r));
-    listEl.appendChild(row);
-    if (metaLabel) {
-      const editedDiv = document.createElement("div");
-      editedDiv.style.cssText = "font-size:11px;color:var(--ink-dim);margin-top:-6px;margin-bottom:6px;";
-      editedDiv.textContent = metaLabel;
-      listEl.appendChild(editedDiv);
+    groupByEditor[key].rows.push(r);
+  });
+  const showEditorHeaders = groups.length > 1;
+
+  let dayTotal = 0;
+  groups.forEach(group => {
+    if (showEditorHeaders) {
+      const header = document.createElement("div");
+      header.style.cssText = "font-weight:700;margin:12px 0 4px;color:var(--ink);";
+      header.textContent = group.editor + "：";
+      listEl.appendChild(header);
     }
+    group.rows.forEach(r => {
+      const it = items.find(x => x.id === r.itemId);
+      const editedLabel = r.editedAt ? new Date(r.editedAt).toLocaleString("zh-CN", { hour12: false }) : "";
+      const metaLabel = showEditorHeaders
+        ? editedLabel
+        : (r.editedBy && editedLabel ? `${r.editedBy} 记录于 ${editedLabel}` : (r.editedBy ? `记录人: ${r.editedBy}` : (editedLabel ? "编辑于 " + editedLabel : "")));
+      const row = document.createElement("div");
+      row.className = "item-line history-row";
+      if (r.usage !== null && r.usage !== undefined) {
+        const converted = convertAmount(r.cost, it ? it.currency : null);
+        if (converted && converted.ok) dayTotal += converted.value;
+        const tagClass = r.usage < 0 ? "tag restock" : "tag";
+        const tagText = r.usage < 0 ? "看起来补货了" : formatConverted(r.cost, it ? it.currency : null);
+        row.innerHTML = `<span>${r.itemName} 用了 ${Number(r.usage).toFixed(2)} ${it ? it.unit : ""}</span><span class="${tagClass}">${tagText}</span>`;
+      } else {
+        row.innerHTML = `<span>${r.itemName}</span><span class="tag">暂无消耗数据</span>`;
+      }
+      row.addEventListener("click", () => openEditEntry(r));
+      listEl.appendChild(row);
+      if (metaLabel) {
+        const editedDiv = document.createElement("div");
+        editedDiv.style.cssText = "font-size:11px;color:var(--ink-dim);margin-top:-6px;margin-bottom:6px;";
+        editedDiv.textContent = metaLabel;
+        listEl.appendChild(editedDiv);
+      }
+    });
   });
   const totalRow = document.createElement("div");
   totalRow.className = "item-line";
@@ -1516,7 +1536,7 @@ function openEditEntry(entry) {
   fields.forEach(f => {
     const val = entry.values && entry.values[f.id] !== undefined && entry.values[f.id] !== null ? entry.values[f.id] : "";
     const label = document.createElement("label");
-    label.innerHTML = `${f.name}<input type="${f.type === "number" ? "number" : "text"}" ${f.type === "number" ? 'step="0.01"' : ""} data-field="${f.id}" value="${val}">`;
+    label.innerHTML = `${f.name}<input type="${f.type === "number" ? "number" : "text"}" ${f.type === "number" ? 'step="1"' : ""} data-field="${f.id}" value="${val}">`;
     grid.appendChild(label);
   });
   editingEntry = { date: entry.date, itemId: entry.itemId, itemName: entry.itemName };
