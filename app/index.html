@@ -512,14 +512,16 @@
     </div>
 
     <div class="card">
-      <h2><span>全部记录</span> <button class="btn-ghost" id="refreshHistoryBtn">刷新</button></h2>
-      <div class="calendar-nav">
-        <button id="calPrevBtn">‹</button>
-        <span id="calMonthLabel"></span>
-        <button id="calNextBtn">›</button>
+      <h2><span>全部记录</span> <span><button class="btn-ghost" id="refreshHistoryBtn">刷新</button> <button class="btn-ghost" id="toggleHistoryBtn">展开</button></span></h2>
+      <div id="historyCalendarBody" style="display:none;">
+        <div class="calendar-nav">
+          <button id="calPrevBtn">‹</button>
+          <span id="calMonthLabel"></span>
+          <button id="calNextBtn">›</button>
+        </div>
+        <div class="calendar-grid" id="calendarGrid"></div>
+        <div class="hint" style="text-align:center;margin-top:8px;">有记录的日期会标一个小圆点,点日期看当天详情</div>
       </div>
-      <div class="calendar-grid" id="calendarGrid"></div>
-      <div class="hint" style="text-align:center;margin-top:8px;">有记录的日期会标一个小圆点,点日期看当天详情</div>
     </div>
 
     <div class="card" id="itemsSettingsCard">
@@ -1427,6 +1429,14 @@ function renderCalendar() {
   }
 }
 
+document.getElementById("toggleHistoryBtn").addEventListener("click", () => {
+  const body = document.getElementById("historyCalendarBody");
+  const btn = document.getElementById("toggleHistoryBtn");
+  const show = body.style.display === "none";
+  body.style.display = show ? "block" : "none";
+  btn.textContent = show ? "收起" : "展开";
+});
+
 document.getElementById("calPrevBtn").addEventListener("click", () => {
   calendarViewDate = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth() - 1, 1);
   renderCalendar();
@@ -1466,6 +1476,10 @@ function openDayDetail(date, dayRows) {
   dayRows.forEach(r => {
     const it = items.find(x => x.id === r.itemId);
     const editedLabel = r.editedAt ? new Date(r.editedAt).toLocaleString("zh-CN", { hour12: false }) : "";
+    let metaLabel = "";
+    if (r.editedBy && editedLabel) metaLabel = `${r.editedBy} 记录于 ${editedLabel}`;
+    else if (r.editedBy) metaLabel = `记录人: ${r.editedBy}`;
+    else if (editedLabel) metaLabel = "编辑于 " + editedLabel;
     const row = document.createElement("div");
     row.className = "item-line history-row";
     if (r.usage !== null && r.usage !== undefined) {
@@ -1479,10 +1493,10 @@ function openDayDetail(date, dayRows) {
     }
     row.addEventListener("click", () => openEditEntry(r));
     listEl.appendChild(row);
-    if (editedLabel) {
+    if (metaLabel) {
       const editedDiv = document.createElement("div");
       editedDiv.style.cssText = "font-size:11px;color:var(--ink-dim);margin-top:-6px;margin-bottom:6px;";
-      editedDiv.textContent = "编辑于 " + editedLabel;
+      editedDiv.textContent = metaLabel;
       listEl.appendChild(editedDiv);
     }
   });

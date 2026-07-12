@@ -42,7 +42,7 @@ const USERS_HEADERS = ["id", "username", "password_hash", "salt", "role", "displ
 const SESSIONS_HEADERS = ["token", "user_id", "created_at", "expires_at"];
 const FIELDS_HEADERS = ["id", "name", "type", "role", "order"];
 const ITEMS_HEADERS = ["id", "name", "unit", "price", "currency", "locked"];
-const LOG_HEADERS = ["date", "item_id", "item_name", "values_json", "usage", "cost", "edited_at"];
+const LOG_HEADERS = ["date", "item_id", "item_name", "values_json", "usage", "cost", "edited_at", "edited_by"];
 
 const DEFAULT_CURRENCY = "CNY";
 const SESSION_TTL_DAYS = 14;
@@ -581,7 +581,7 @@ function findPreviousStockCheck(rows, itemId, date, stockFieldId) {
   return bestVal;
 }
 
-function logEntries(categoryId, date, entries) {
+function logEntries(categoryId, date, entries, editedBy) {
   const sheet = getOrCreateSheet(logSheetName(categoryId), LOG_HEADERS);
   const rows = sheet.getDataRange().getValues();
   const stockFieldId = stockCheckFieldId(categoryId);
@@ -616,7 +616,7 @@ function logEntries(categoryId, date, entries) {
       }
     }
 
-    const rowValues = [date, itemId, entry.itemName || "", JSON.stringify(merged), usage, cost, nowIso];
+    const rowValues = [date, itemId, entry.itemName || "", JSON.stringify(merged), usage, cost, nowIso, editedBy || ""];
     if (existingRowIndex >= 0) {
       sheet.getRange(existingRowIndex + 1, 1, 1, rowValues.length).setValues([rowValues]);
       rows[existingRowIndex] = rowValues;
@@ -642,6 +642,7 @@ function getRecentLog(categoryId, days) {
       usage: rows[i][4] === "" ? null : Number(rows[i][4]),
       cost: rows[i][5] === "" ? null : Number(rows[i][5]),
       editedAt: rows[i][6] || null,
+      editedBy: rows[i][7] || null,
     });
   }
   out.sort(function (a, b) { return new Date(b.date) - new Date(a.date); });
@@ -735,7 +736,7 @@ function doPost(e) {
 
     if (action === "saveLogEntries") {
       requireStoreForCategory(session, payload.categoryId);
-      logEntries(payload.categoryId, payload.date, payload.entries);
+      logEntries(payload.categoryId, payload.date, payload.entries, session.display_name || session.username);
       return jsonResponse({ status: "ok" });
     }
 
