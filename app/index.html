@@ -873,19 +873,57 @@ async function selectCategory(cat) {
   document.getElementById("fieldsManage").style.display = "none";
   editingEntry = null;
   todayInputs = {};
-  await loadFields();
-  await loadItemsAndStock();
-  await loadHistory();
-  await loadSettlementCurrency();
+
+  const historyEl = document.getElementById("historyList");
+  historyEl.className = "";
+  historyEl.innerHTML = "加载中…";
+
+  // 四个请求同时发出去,不再一个个排队等——每个请求都要真的连一次 Google
+  // Apps Script,顺序等的话延迟是四个加起来,并发之后只等最慢的那一个。
+  // 拿到数据以后再按"字段 -> 物品 -> 结算货币 -> 历史记录"这个依赖顺序渲染
+  // (物品表格要用到字段列表,历史记录金额换算要用到结算货币)。
+  const [fieldsResult, itemsResult, currencyResult, logResult] = await Promise.allSettled([
+    fetchFields(cat.id),
+    fetchItemsAndStock(cat.id),
+    fetchSettlementCurrency(cat.id),
+    fetchLog(cat.id, 30),
+  ]);
+
+  applyFields(fieldsResult.status === "fulfilled" ? fieldsResult.value : []);
+
+  if (itemsResult.status === "fulfilled") {
+    applyItemsAndStock(itemsResult.value);
+  } else {
+    document.getElementById("noItemsHint").style.display = "block";
+    document.getElementById("noItemsHint").textContent = "无法加载物品列表: " + itemsResult.reason.message;
+  }
+
+  applySettlementCurrency(currencyResult.status === "fulfilled" ? currencyResult.value : "CNY");
+  refreshExchangeRates(); // 汇率单独异步刷新,不阻塞录入/保存这些核心功能先显示出来
+
+  if (logResult.status === "fulfilled") {
+    applyLog(logResult.value);
+  } else {
+    historyEl.className = "empty";
+    historyEl.textContent = "加载失败: " + logResult.reason.message;
+  }
 }
 
 // ---------- 结算货币 + 实时汇率 ----------
-async function loadSettlementCurrency() {
-  settlementCurrency = (await apiGet("getSettlementCurrency", { categoryId: currentCategory.id })).currency;
+async function fetchSettlementCurrency(categoryId) {
+  return (await apiGet("getSettlementCurrency", { categoryId })).currency;
+}
+
+function applySettlementCurrency(currency) {
+  settlementCurrency = currency;
   const select = document.getElementById("settlementCurrencySelect");
   populateCurrencySelect(select);
   select.value = settlementCurrency;
   document.getElementById("currencyCard").style.display = items.length > 0 ? "block" : "none";
+}
+
+async function loadSettlementCurrency() {
+  applySettlementCurrency(await fetchSettlementCurrency(currentCategory.id));
   await refreshExchangeRates();
 }
 
@@ -940,11 +978,19 @@ function renderResultIfOpen() {
 }
 
 // ---------- 分类详情:字段管理 ----------
-async function loadFields() {
-  fields = (await apiGet("listFields", { categoryId: currentCategory.id })).fields;
+async function fetchFields(categoryId) {
+  return (await apiGet("listFields", { categoryId })).fields;
+}
+
+function applyFields(newFields) {
+  fields = newFields;
   incomingFieldId = (fields.find(f => f.role === "incoming") || {}).id || null;
   renderFieldsManageList();
   updateFieldRoleOptions();
+}
+
+async function loadFields() {
+  applyFields(await fetchFields(currentCategory.id));
 }
 
 // 库存盘点/进货量每个分类只能有一个:已经存在的话,直接把对应选项禁用掉,
@@ -1177,15 +1223,22 @@ async function saveDirectly() {
   }
 }
 
+async function fetchItemsAndStock(categoryId) {
+  return apiGet("listItems", { categoryId });
+}
+
+function applyItemsAndStock(data) {
+  items = data.items || [];
+  latestStockCheck = data.latestStockCheck || {};
+  stockFieldId = data.stockCheckFieldId || null;
+  renderItemRows();
+  renderManageList();
+  renderStockSummary();
+}
+
 async function loadItemsAndStock() {
   try {
-    const data = await apiGet("listItems", { categoryId: currentCategory.id });
-    items = data.items || [];
-    latestStockCheck = data.latestStockCheck || {};
-    stockFieldId = data.stockCheckFieldId || null;
-    renderItemRows();
-    renderManageList();
-    renderStockSummary();
+    applyItemsAndStock(await fetchItemsAndStock(currentCategory.id));
   } catch (err) {
     document.getElementById("noItemsHint").style.display = "block";
     document.getElementById("noItemsHint").textContent = "无法加载物品列表: " + err.message;
@@ -1247,36 +1300,45 @@ function formatDateLabel(dateStr) {
 }
 
 // "最近记录" 只列出日期,点进某一天才展开看当天的明细(page 导航,不是原地展开)
+async function fetchLog(categoryId, days) {
+  return (await apiGet("getLog", { categoryId, days })).log;
+}
+
+function applyLog(rows) {
+  const el = document.getElementById("historyList");
+  if (!rows || rows.length === 0) {
+    el.className = "empty";
+    el.textContent = "还没有历史记录";
+    return;
+  }
+  const byDate = {};
+  rows.forEach(r => {
+    byDate[r.date] = byDate[r.date] || [];
+    byDate[r.date].push(r);
+  });
+  el.className = "";
+  el.innerHTML = "";
+  Object.keys(byDate).sort().reverse().forEach(date => {
+    const dayRows = byDate[date];
+    const dayTotal = dayRows.reduce((s, r) => {
+      const it = items.find(x => x.id === r.itemId);
+      const c = convertAmount(r.cost, it ? it.currency : null);
+      return s + (c && c.ok ? c.value : 0);
+    }, 0);
+    const row = document.createElement("div");
+    row.className = "item-line history-row";
+    row.innerHTML = `<span>${formatDateLabel(date)} 记录</span><span class="hint">${dayTotal ? currencySymbol(settlementCurrency) + dayTotal.toFixed(2) + " " : ""}›</span>`;
+    row.addEventListener("click", () => openDayDetail(date, dayRows));
+    el.appendChild(row);
+  });
+}
+
 async function loadHistory() {
   const el = document.getElementById("historyList");
   el.className = "";
   el.innerHTML = "加载中…";
   try {
-    const rows = (await apiGet("getLog", { categoryId: currentCategory.id, days: 30 })).log;
-    if (!rows || rows.length === 0) {
-      el.className = "empty";
-      el.textContent = "还没有历史记录";
-      return;
-    }
-    const byDate = {};
-    rows.forEach(r => {
-      byDate[r.date] = byDate[r.date] || [];
-      byDate[r.date].push(r);
-    });
-    el.innerHTML = "";
-    Object.keys(byDate).sort().reverse().forEach(date => {
-      const dayRows = byDate[date];
-      const dayTotal = dayRows.reduce((s, r) => {
-        const it = items.find(x => x.id === r.itemId);
-        const c = convertAmount(r.cost, it ? it.currency : null);
-        return s + (c && c.ok ? c.value : 0);
-      }, 0);
-      const row = document.createElement("div");
-      row.className = "item-line history-row";
-      row.innerHTML = `<span>${formatDateLabel(date)} 记录</span><span class="hint">${dayTotal ? currencySymbol(settlementCurrency) + dayTotal.toFixed(2) + " " : ""}›</span>`;
-      row.addEventListener("click", () => openDayDetail(date, dayRows));
-      el.appendChild(row);
-    });
+    applyLog(await fetchLog(currentCategory.id, 30));
   } catch (err) {
     el.className = "empty";
     el.textContent = "加载失败: " + err.message;
