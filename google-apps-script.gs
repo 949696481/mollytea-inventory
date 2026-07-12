@@ -69,6 +69,14 @@ function jsonResponse(obj) {
 }
 
 function formatDate(d) {
+  // 日期字符串(如客户端传来的 "2026-07-12")按 ECMA 规范会被当成 UTC 零点解析,
+  // 但 Sheet 里已存的日期格是按表格时区自动转换的本地零点——两者一比就可能差一天,
+  // 导致同一天的 upsert 找不到已有行、变成重复插入。字符串直接按字面 Y-M-D 截取,
+  // 完全绕开时区解析,避免这个不一致。
+  if (typeof d === "string") {
+    const m = d.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return m[1] + "-" + m[2] + "-" + m[3];
+  }
   const date = new Date(d);
   return date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0");
 }
@@ -567,16 +575,19 @@ function pickValue(newVal, oldVal) {
 }
 
 function findPreviousStockCheck(rows, itemId, date, stockFieldId) {
-  const targetTime = new Date(date).getTime();
-  let bestTime = -Infinity, bestVal = null;
+  // 用 formatDate 的字符串比较,不用 new Date(...).getTime() 比较——后者对"日期字符串"
+  // 和"表格里已存的 Date 单元格"解析时区不一致(见 formatDate 注释),会导致跨时区时
+  // 边界日期判断错误。"YYYY-MM-DD" 字符串本身按字典序比较就等价于按时间先后比较。
+  const targetDateStr = formatDate(date);
+  let bestDateStr = null, bestVal = null;
   for (let i = 1; i < rows.length; i++) {
     if (String(rows[i][1]) !== String(itemId)) continue;
-    const rTime = new Date(rows[i][0]).getTime();
-    if (rTime >= targetTime) continue;
+    const rDateStr = formatDate(rows[i][0]);
+    if (rDateStr >= targetDateStr) continue;
     const values = parseValues(rows[i][3]);
     const v = values[stockFieldId];
     if (v === undefined || v === null || v === "") continue;
-    if (rTime > bestTime) { bestTime = rTime; bestVal = Number(v); }
+    if (bestDateStr === null || rDateStr > bestDateStr) { bestDateStr = rDateStr; bestVal = Number(v); }
   }
   return bestVal;
 }
