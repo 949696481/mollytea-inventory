@@ -931,9 +931,8 @@ async function selectCategory(cat) {
   editingEntry = null;
   todayInputs = {};
 
-  const historyEl = document.getElementById("historyList");
-  historyEl.className = "";
-  historyEl.innerHTML = "加载中…";
+  const calendarGrid = document.getElementById("calendarGrid");
+  calendarGrid.innerHTML = `<div class="empty" style="grid-column:1/-1;">加载中…</div>`;
 
   // 四个请求同时发出去,不再一个个排队等——每个请求都要真的连一次 Google
   // Apps Script,顺序等的话延迟是四个加起来,并发之后只等最慢的那一个。
@@ -943,7 +942,7 @@ async function selectCategory(cat) {
     fetchFields(cat.id),
     fetchItemsAndStock(cat.id),
     fetchSettlementCurrency(cat.id),
-    fetchLog(cat.id, 30),
+    fetchLog(cat.id, ALL_HISTORY_DAYS),
   ]);
 
   applyFields(fieldsResult.status === "fulfilled" ? fieldsResult.value : []);
@@ -961,8 +960,7 @@ async function selectCategory(cat) {
   if (logResult.status === "fulfilled") {
     applyLog(logResult.value);
   } else {
-    historyEl.className = "empty";
-    historyEl.textContent = "加载失败: " + logResult.reason.message;
+    calendarGrid.innerHTML = `<div class="empty" style="grid-column:1/-1;">加载失败: ${logResult.reason.message}</div>`;
   }
 }
 
