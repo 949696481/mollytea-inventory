@@ -1,4 +1,4 @@
-const CACHE_NAME = "kucun-zhangben-v6";
+const CACHE_NAME = "kucun-zhangben-v7";
 const ASSETS = [
   "./index.html",
   "./config.js",

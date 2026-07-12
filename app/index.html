@@ -96,6 +96,7 @@
     justify-content: space-between;
   }
   .card h2 .hint { font-size: 12px; color: var(--ink-dim); font-weight: 400; }
+  .hint { font-size: 12px; color: var(--ink-dim); }
 
   .row {
     display: flex;
@@ -319,6 +320,56 @@
   .stock-tile-value { font-size: 20px; font-weight: 700; color: var(--ink); }
   .stock-tile-value .unit { font-size: 11px; font-weight: 400; color: var(--ink-dim); margin-left: 3px; }
   .stock-tile-hint { font-size: 10px; color: var(--gold-dark); margin-top: 6px; }
+
+  .calendar-nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .calendar-nav button {
+    font-size: 18px;
+    padding: 4px 14px;
+    color: var(--ink);
+    background: var(--paper-dim);
+    border-radius: 8px;
+  }
+  .calendar-nav button:disabled { opacity: 0.3; cursor: default; }
+  .calendar-nav span { font-size: 14px; font-weight: 600; color: var(--ink); }
+  .calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 4px;
+  }
+  .cal-weekday {
+    text-align: center;
+    font-size: 11px;
+    color: var(--ink-dim);
+    padding: 4px 0;
+  }
+  .cal-day {
+    aspect-ratio: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    font-size: 13px;
+    color: var(--ink);
+    cursor: pointer;
+    position: relative;
+  }
+  .cal-day:hover { background: var(--paper-dim); }
+  .cal-day-today { font-weight: 700; border: 1.5px solid var(--gold-dark); }
+  .cal-day-has-data { background: rgba(62,131,104,0.10); }
+  .cal-day-future { color: var(--ink-dim); opacity: 0.35; cursor: default; }
+  .cal-day-future:hover { background: none; }
+  .cal-dot {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--gold-dark);
+    margin-top: 2px;
+  }
 </style>
 </head>
 <body>
@@ -461,8 +512,14 @@
     </div>
 
     <div class="card">
-      <h2><span>最近记录</span> <button class="btn-ghost" id="refreshHistoryBtn">刷新</button></h2>
-      <div id="historyList" class="empty">加载中…</div>
+      <h2><span>全部记录</span> <button class="btn-ghost" id="refreshHistoryBtn">刷新</button></h2>
+      <div class="calendar-nav">
+        <button id="calPrevBtn">‹</button>
+        <span id="calMonthLabel"></span>
+        <button id="calNextBtn">›</button>
+      </div>
+      <div class="calendar-grid" id="calendarGrid"></div>
+      <div class="hint" style="text-align:center;margin-top:8px;">有记录的日期会标一个小圆点,点日期看当天详情</div>
     </div>
 
     <div class="card" id="itemsSettingsCard">
@@ -505,10 +562,10 @@
     </div>
   </div>
 
-  <!-- 某一天的详细记录:从"最近记录"点进某个日期后展示 -->
+  <!-- 某一天的详细记录:从日历点进某一天后展示 -->
   <div class="view" id="view-day-detail" style="display:none;">
     <div class="card">
-      <h2 id="dayDetailTitle"></h2>
+      <h2><span id="dayDetailTitle"></span> <button class="btn-ghost" id="deleteDayBtn" style="display:none;">删除这天</button></h2>
       <div id="dayDetailList"></div>
     </div>
   </div>
@@ -1299,60 +1356,114 @@ function formatDateLabel(dateStr) {
   return `${y}-${m}-${d}`;
 }
 
-// "最近记录" 只列出日期,点进某一天才展开看当天的明细(page 导航,不是原地展开)
+// "全部记录"是日历形式:哪天有记录标个点,点日期进当天详情。以后的日期
+// (今天之后)灰掉不能点——数据不可能存在于未来。
+const ALL_HISTORY_DAYS = 36500; // 约100年,相当于"不限制天数,拿全部历史"
+let historyRowsByDate = {}; // {dateStr: [rows]}
+let calendarViewDate = new Date(); // 日历当前显示的月份
+let currentDayDetailDate = null; // 当前在"某天详情"页看的是哪一天,删除按钮要用
+
 async function fetchLog(categoryId, days) {
   return (await apiGet("getLog", { categoryId, days })).log;
 }
 
 function applyLog(rows) {
-  const el = document.getElementById("historyList");
-  if (!rows || rows.length === 0) {
-    el.className = "empty";
-    el.textContent = "还没有历史记录";
-    return;
-  }
-  const byDate = {};
-  rows.forEach(r => {
-    byDate[r.date] = byDate[r.date] || [];
-    byDate[r.date].push(r);
+  historyRowsByDate = {};
+  (rows || []).forEach(r => {
+    historyRowsByDate[r.date] = historyRowsByDate[r.date] || [];
+    historyRowsByDate[r.date].push(r);
   });
-  el.className = "";
-  el.innerHTML = "";
-  Object.keys(byDate).sort().reverse().forEach(date => {
-    const dayRows = byDate[date];
-    const dayTotal = dayRows.reduce((s, r) => {
-      const it = items.find(x => x.id === r.itemId);
-      const c = convertAmount(r.cost, it ? it.currency : null);
-      return s + (c && c.ok ? c.value : 0);
-    }, 0);
-    const row = document.createElement("div");
-    row.className = "item-line history-row";
-    row.innerHTML = `<span>${formatDateLabel(date)} 记录</span><span class="hint">${dayTotal ? currencySymbol(settlementCurrency) + dayTotal.toFixed(2) + " " : ""}›</span>`;
-    row.addEventListener("click", () => openDayDetail(date, dayRows));
-    el.appendChild(row);
-  });
+  calendarViewDate = new Date();
+  renderCalendar();
 }
 
 async function loadHistory() {
-  const el = document.getElementById("historyList");
-  el.className = "";
-  el.innerHTML = "加载中…";
   try {
-    applyLog(await fetchLog(currentCategory.id, 30));
+    applyLog(await fetchLog(currentCategory.id, ALL_HISTORY_DAYS));
   } catch (err) {
-    el.className = "empty";
-    el.textContent = "加载失败: " + err.message;
+    const grid = document.getElementById("calendarGrid");
+    grid.innerHTML = `<div class="empty" style="grid-column:1/-1;">加载失败: ${err.message}</div>`;
   }
 }
+
+function renderCalendar() {
+  const grid = document.getElementById("calendarGrid");
+  const label = document.getElementById("calMonthLabel");
+  const year = calendarViewDate.getFullYear();
+  const month = calendarViewDate.getMonth(); // 0-based
+  label.textContent = `${year}年${month + 1}月`;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const isCurrentMonth = year === today.getFullYear() && month === today.getMonth();
+  document.getElementById("calNextBtn").disabled = isCurrentMonth;
+
+  const firstWeekday = new Date(year, month, 1).getDay(); // 0=周日
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  grid.innerHTML = "";
+  ["日", "一", "二", "三", "四", "五", "六"].forEach(w => {
+    const el = document.createElement("div");
+    el.className = "cal-weekday";
+    el.textContent = w;
+    grid.appendChild(el);
+  });
+  for (let i = 0; i < firstWeekday; i++) {
+    grid.appendChild(document.createElement("div"));
+  }
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateObj = new Date(year, month, d);
+    const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    const isFuture = dateObj > today;
+    const dayRows = historyRowsByDate[dateStr];
+    const cell = document.createElement("div");
+    cell.className = "cal-day"
+      + (isFuture ? " cal-day-future" : "")
+      + (dayRows ? " cal-day-has-data" : "")
+      + (dateStr === todayStr() ? " cal-day-today" : "");
+    cell.innerHTML = `<span>${d}</span>` + (dayRows ? '<div class="cal-dot"></div>' : "");
+    if (!isFuture) {
+      cell.addEventListener("click", () => openDayDetail(dateStr, dayRows || []));
+    }
+    grid.appendChild(cell);
+  }
+}
+
+document.getElementById("calPrevBtn").addEventListener("click", () => {
+  calendarViewDate = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth() - 1, 1);
+  renderCalendar();
+});
+document.getElementById("calNextBtn").addEventListener("click", () => {
+  calendarViewDate = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth() + 1, 1);
+  renderCalendar();
+});
+
+document.getElementById("deleteDayBtn").addEventListener("click", async () => {
+  if (!currentDayDetailDate) return;
+  if (!confirm(`删除 ${formatDateLabel(currentDayDetailDate)} 这一天的所有记录?此操作无法恢复。`)) return;
+  try {
+    await apiPost("deleteLogDay", { categoryId: currentCategory.id, date: currentDayDetailDate });
+    showView("detail");
+    await loadHistory();
+  } catch (err) {
+    alert("删除失败: " + err.message);
+  }
+});
 
 // 点进某一天:不是照抄"今天的记录"的原始字段,而是一份消耗总结——
 // 每个物品的消耗量+消耗金额,最后一行是当天总消耗。
 function openDayDetail(date, dayRows) {
   currentDayLabel = formatDateLabel(date) + " 记录";
+  currentDayDetailDate = date;
   showView("day-detail");
   document.getElementById("dayDetailTitle").textContent = currentDayLabel;
+  document.getElementById("deleteDayBtn").style.display = (isAdmin() && dayRows.length > 0) ? "inline-block" : "none";
   const listEl = document.getElementById("dayDetailList");
   listEl.innerHTML = "";
+  if (dayRows.length === 0) {
+    listEl.innerHTML = `<div class="empty">这天没有记录</div>`;
+    return;
+  }
   let dayTotal = 0;
   dayRows.forEach(r => {
     const it = items.find(x => x.id === r.itemId);

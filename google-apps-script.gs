@@ -619,6 +619,14 @@ function getRecentLog(categoryId, days) {
   return out;
 }
 
+function deleteLogDay(categoryId, date) {
+  const sheet = getOrCreateSheet(logSheetName(categoryId), LOG_HEADERS);
+  const rows = sheet.getDataRange().getValues();
+  for (let i = rows.length - 1; i >= 1; i--) {
+    if (rows[i][1] && isSameDate(rows[i][0], date)) sheet.deleteRow(i + 1);
+  }
+}
+
 // ---------- 汇率(服务器代理,浏览器 fetch 没法自定义 User-Agent) ----------
 function getExchangeRates(baseCurrency) {
   const url = "https://api.frankfurter.dev/v1/latest?base=" + encodeURIComponent(baseCurrency);
@@ -691,6 +699,12 @@ function doPost(e) {
     if (action === "saveLogEntries") {
       requireStoreForCategory(session, payload.categoryId);
       logEntries(payload.categoryId, payload.date, payload.entries);
+      return jsonResponse({ status: "ok" });
+    }
+
+    if (action === "deleteLogDay") {
+      requireAdmin(session);
+      deleteLogDay(payload.categoryId, payload.date);
       return jsonResponse({ status: "ok" });
     }
 
