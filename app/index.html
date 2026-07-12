@@ -579,6 +579,8 @@
     <div id="editEntryFields"></div>
     <button class="btn-primary" id="saveEditBtn">保存修改</button>
     <div class="status-line" id="editStatus"></div>
+    <button class="btn-ghost" id="toggleHistoryVersionsBtn" style="margin-top:10px;display:none;">历史版本</button>
+    <div id="entryHistoryList" style="display:none;margin-top:8px;"></div>
   </div>
 
 </main>
@@ -1349,6 +1351,7 @@ function editStockFor(item) {
   document.getElementById("editStatus").textContent = "";
   document.getElementById("editEntryCard").style.display = "block";
   document.getElementById("editEntryCard").scrollIntoView({ behavior: "smooth", block: "start" });
+  resetHistoryPanel();
 }
 
 function formatDateLabel(dateStr) {
@@ -1544,6 +1547,61 @@ function openEditEntry(entry) {
   document.getElementById("editStatus").textContent = "";
   document.getElementById("editEntryCard").style.display = "block";
   document.getElementById("editEntryCard").scrollIntoView({ behavior: "smooth", block: "start" });
+  resetHistoryPanel();
+}
+
+// ---------- 编辑历史版本:改错了能退回去,不用只能靠记忆手动改回来 ----------
+function resetHistoryPanel() {
+  document.getElementById("toggleHistoryVersionsBtn").style.display = "inline-block";
+  document.getElementById("toggleHistoryVersionsBtn").textContent = "历史版本";
+  const listEl = document.getElementById("entryHistoryList");
+  listEl.style.display = "none";
+  listEl.innerHTML = "";
+}
+
+document.getElementById("toggleHistoryVersionsBtn").addEventListener("click", async () => {
+  const listEl = document.getElementById("entryHistoryList");
+  if (listEl.style.display !== "none") { listEl.style.display = "none"; return; }
+  if (!editingEntry) return;
+  listEl.style.display = "block";
+  listEl.innerHTML = `<div class="hint">加载中…</div>`;
+  try {
+    const { history } = await apiGet("getEntryHistory", { categoryId: currentCategory.id, itemId: editingEntry.itemId, date: editingEntry.date });
+    if (!history.length) { listEl.innerHTML = `<div class="hint">这条记录还没有被改过</div>`; return; }
+    listEl.innerHTML = "";
+    history.forEach(h => {
+      const row = document.createElement("div");
+      row.className = "item-line";
+      row.style.cssText = "align-items:flex-start;";
+      const timeLabel = h.editedAt ? new Date(h.editedAt).toLocaleString("zh-CN", { hour12: false }) : "";
+      const fieldSummary = fields.map(f => {
+        const v = h.values && h.values[f.id];
+        return (v !== undefined && v !== null && v !== "") ? `${f.name}:${v}` : null;
+      }).filter(Boolean).join(" · ");
+      const info = document.createElement("div");
+      info.innerHTML = `<div>${h.editedBy || "未知"} · ${timeLabel}</div><div class="hint">${fieldSummary || "(空)"}</div>`;
+      const restoreBtn = document.createElement("button");
+      restoreBtn.className = "btn-ghost";
+      restoreBtn.textContent = "恢复此版本";
+      restoreBtn.addEventListener("click", () => applyHistoryVersion(h));
+      row.appendChild(info);
+      row.appendChild(restoreBtn);
+      listEl.appendChild(row);
+    });
+  } catch (err) {
+    listEl.innerHTML = `<div class="status-line error">加载失败: ${err.message}</div>`;
+  }
+});
+
+// 恢复只是把历史值填回编辑表单,不直接保存——还得手动点"保存修改"确认,
+// 避免点一下"恢复"就误操作把当前数据覆盖掉。
+function applyHistoryVersion(h) {
+  document.querySelectorAll("#editFieldsGrid input").forEach(inp => {
+    const v = h.values && h.values[inp.dataset.field];
+    inp.value = (v !== undefined && v !== null) ? v : "";
+  });
+  document.getElementById("editStatus").className = "status-line";
+  document.getElementById("editStatus").textContent = "已填入历史版本,确认无误后点\"保存修改\"";
 }
 
 document.getElementById("cancelEditBtn").addEventListener("click", () => {

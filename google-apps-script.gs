@@ -43,6 +43,7 @@ const SESSIONS_HEADERS = ["token", "user_id", "created_at", "expires_at"];
 const FIELDS_HEADERS = ["id", "name", "type", "role", "order"];
 const ITEMS_HEADERS = ["id", "name", "unit", "price", "currency", "locked"];
 const LOG_HEADERS = ["date", "item_id", "item_name", "values_json", "usage", "cost", "edited_at", "edited_by"];
+const HISTORY_HEADERS = ["date", "item_id", "item_name", "values_json", "usage", "cost", "edited_at", "edited_by"];
 
 const DEFAULT_CURRENCY = "CNY";
 const SESSION_TTL_DAYS = 14;
@@ -63,6 +64,7 @@ function getOrCreateSheet(name, headers) {
 function fieldsSheetName(categoryId) { return "fields_" + categoryId; }
 function itemsSheetName(categoryId) { return "items_" + categoryId; }
 function logSheetName(categoryId) { return "log_" + categoryId; }
+function historySheetName(categoryId) { return "history_" + categoryId; }
 
 function jsonResponse(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
@@ -400,7 +402,7 @@ function deleteCategoryById(categoryId) {
   for (let i = rows.length - 1; i >= 1; i--) {
     if (String(rows[i][0]) === String(categoryId)) { sheet.deleteRow(i + 1); break; }
   }
-  [fieldsSheetName(categoryId), itemsSheetName(categoryId), logSheetName(categoryId)].forEach(function (name) {
+  [fieldsSheetName(categoryId), itemsSheetName(categoryId), logSheetName(categoryId), historySheetName(categoryId)].forEach(function (name) {
     const s = ss.getSheetByName(name);
     if (s) ss.deleteSheet(s);
   });
@@ -629,6 +631,9 @@ function logEntries(categoryId, date, entries, editedBy) {
 
     const rowValues = [date, itemId, entry.itemName || "", JSON.stringify(merged), usage, cost, nowIso, editedBy || ""];
     if (existingRowIndex >= 0) {
+      // 覆盖之前先把旧版本存进历史表——"任何 edit 都可以 recover"靠的是这一份快照,
+      // 不是靠"不覆盖、一直往下加行"(那样就是这次修的重复行 bug)。
+      getOrCreateSheet(historySheetName(categoryId), HISTORY_HEADERS).appendRow(rows[existingRowIndex]);
       sheet.getRange(existingRowIndex + 1, 1, 1, rowValues.length).setValues([rowValues]);
       rows[existingRowIndex] = rowValues;
     } else {
@@ -657,6 +662,26 @@ function getRecentLog(categoryId, days) {
     });
   }
   out.sort(function (a, b) { return new Date(b.date) - new Date(a.date); });
+  return out;
+}
+
+function getEntryHistory(categoryId, itemId, date) {
+  const sheet = getOrCreateSheet(historySheetName(categoryId), HISTORY_HEADERS);
+  const rows = sheet.getDataRange().getValues();
+  const out = [];
+  for (let i = 1; i < rows.length; i++) {
+    if (!rows[i][1]) continue;
+    if (String(rows[i][1]) !== String(itemId)) continue;
+    if (!isSameDate(rows[i][0], date)) continue;
+    out.push({
+      values: parseValues(rows[i][3]),
+      usage: rows[i][4] === "" ? null : Number(rows[i][4]),
+      cost: rows[i][5] === "" ? null : Number(rows[i][5]),
+      editedAt: rows[i][6] || null,
+      editedBy: rows[i][7] || null,
+    });
+  }
+  out.sort(function (a, b) { return new Date(b.editedAt) - new Date(a.editedAt); });
   return out;
 }
 
@@ -692,6 +717,7 @@ function doGet(e) {
     if (action === "listFields") return jsonResponse({ fields: listFields(p.categoryId) });
     if (action === "listItems") return jsonResponse(getItemsWithLatestStockCheck(p.categoryId));
     if (action === "getLog") return jsonResponse({ log: getRecentLog(p.categoryId, parseInt(p.days || "30", 10)) });
+    if (action === "getEntryHistory") return jsonResponse({ history: getEntryHistory(p.categoryId, p.itemId, p.date) });
     if (action === "getExchangeRates") return jsonResponse(getExchangeRates(p.base));
     if (action === "listUsers") { requireAdmin(session); return jsonResponse({ users: listUsers() }); }
     return jsonResponse({ error: "unknown action" });
