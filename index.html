@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0B3D33">
+<title>库存登记 · MollyTea</title>
+<style>
+  :root {
+    --bg-deep: #0B3D33;
+    --bg-light: #1B6F5C;
+    --gold-light: #F6D68A;
+    --gold-dark: #C9963C;
+    --paper: #F7F4EC;
+    --ink: #1E2A26;
+    --ink-dim: #5B6B65;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: var(--bg-deep);
+    background-image: radial-gradient(circle at 20% 0%, var(--bg-light) 0%, transparent 55%);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  .card {
+    max-width: 420px;
+    width: 100%;
+    background: var(--paper);
+    border-radius: 24px;
+    padding: 40px 32px;
+    text-align: center;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.3);
+  }
+  .mark {
+    width: 72px;
+    height: 72px;
+    border-radius: 18px;
+    overflow: hidden;
+    margin: 0 auto 20px;
+    box-shadow: 0 6px 16px rgba(0,0,0,0.25);
+  }
+  .mark img { width: 100%; height: 100%; display: block; object-fit: cover; }
+  h1 {
+    margin: 0 0 6px;
+    font-size: 24px;
+    color: var(--ink);
+    letter-spacing: 0.3px;
+  }
+  p.tagline {
+    margin: 0 0 28px;
+    color: var(--ink-dim);
+    font-size: 14px;
+  }
+  .cta {
+    display: block;
+    width: 100%;
+    padding: 16px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, var(--gold-light), var(--gold-dark));
+    color: var(--bg-deep);
+    font-weight: 700;
+    font-size: 16px;
+    text-decoration: none;
+  }
+  .hint {
+    margin-top: 20px;
+    font-size: 12px;
+    color: var(--ink-dim);
+    line-height: 1.6;
+  }
+  .hint b { color: var(--ink); }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="mark"><img src="app/icon-192.png" alt="库存登记"></div>
+    <h1>库存登记</h1>
+    <p class="tagline">MollyTea 门店库存记录 App</p>
+    <a class="cta" href="app/">打开 App →</a>
+    <p class="hint">
+      管理员和员工都用同一个网址登录,各自的账号决定能看到/能改什么。<br>
+      在 <b>Chrome / Edge</b> 里打开后,地址栏会出现一个安装图标——点一下就能把它
+      装成桌面/主屏幕上的独立 App,不用每次都开浏览器找网址。
+    </p>
+  </div>
+</body>
+</html>

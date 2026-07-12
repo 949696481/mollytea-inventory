@@ -1,0 +1,1602 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>库存登记</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0B3D33">
+<script src="config.js"></script>
+<style>
+  :root {
+    --bg-deep: #0B3D33;
+    --bg-mid: #12594A;
+    --bg-light: #1B6F5C;
+    --gold: #E8B95C;
+    --gold-light: #F6D68A;
+    --gold-dark: #C9963C;
+    --paper: #F7F4EC;
+    --paper-dim: #EDE8DA;
+    --ink: #1E2A26;
+    --ink-dim: #5B6B65;
+    --danger: #B6543C;
+    --ok: #3E8368;
+    --radius: 18px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0;
+    background: var(--bg-deep);
+    background-image: radial-gradient(circle at 20% 0%, var(--bg-light) 0%, transparent 55%);
+    color: var(--ink);
+    min-height: 100vh;
+    padding-bottom: 48px;
+  }
+  header {
+    padding: 28px 20px 20px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  header #backBtn {
+    color: var(--paper);
+    font-size: 20px;
+    padding: 4px 8px 4px 0;
+    flex-shrink: 0;
+  }
+  header .header-titles { flex: 1; min-width: 0; }
+  header #manageBtn, header #accountsBtn, header #logoutBtn {
+    color: var(--paper);
+    background: rgba(247,244,236,0.12);
+    border-radius: 20px;
+    padding: 8px 14px;
+    font-size: 13px;
+    flex-shrink: 0;
+  }
+  header .mark {
+    width: 44px; height: 44px; border-radius: 12px;
+    overflow: hidden;
+    flex-shrink: 0;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+  }
+  header .mark img { width: 100%; height: 100%; display: block; object-fit: cover; }
+  header h1 {
+    color: var(--paper);
+    font-size: 20px;
+    margin: 0;
+    letter-spacing: 0.3px;
+  }
+  header p {
+    color: rgba(247,244,236,0.6);
+    margin: 2px 0 0;
+    font-size: 13px;
+  }
+  main {
+    max-width: 560px;
+    margin: 0 auto;
+    padding: 0 16px;
+  }
+  .card {
+    background: var(--paper);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 16px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.18);
+  }
+  .card h2 {
+    font-size: 15px;
+    margin: 0 0 14px;
+    color: var(--ink);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .card h2 .hint { font-size: 12px; color: var(--ink-dim); font-weight: 400; }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--paper-dim);
+  }
+  .row:last-child { border-bottom: none; }
+  .row .name { flex: 1; font-size: 15px; }
+  .row .name small { display: block; color: var(--ink-dim); font-size: 12px; margin-top: 2px; }
+
+  button {
+    font-family: inherit;
+    border: none;
+    cursor: pointer;
+    background: none;
+  }
+  .btn-primary {
+    width: 100%;
+    padding: 14px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, var(--gold-light), var(--gold-dark));
+    color: var(--bg-deep);
+    font-weight: 700;
+    font-size: 15px;
+    margin-top: 6px;
+  }
+  .btn-primary:disabled { opacity: 0.5; cursor: default; }
+  .btn-secondary {
+    width: 100%;
+    padding: 12px;
+    border-radius: 12px;
+    background: var(--paper-dim);
+    color: var(--ink);
+    font-weight: 600;
+    font-size: 14px;
+  }
+  .btn-ghost {
+    background: none;
+    color: var(--gold-dark);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 4px 8px;
+    flex-shrink: 0;
+  }
+
+  .summary-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 4px;
+  }
+  .stat {
+    background: var(--paper-dim);
+    border-radius: 12px;
+    padding: 12px 14px;
+  }
+  .stat .label { font-size: 12px; color: var(--ink-dim); }
+  .stat .value { font-size: 20px; font-weight: 700; margin-top: 2px; }
+  .stat .value.cost { color: var(--danger); }
+
+  .item-line {
+    display: flex;
+    justify-content: space-between;
+    font-size: 14px;
+    padding: 8px 0;
+    border-bottom: 1px dashed var(--paper-dim);
+    gap: 10px;
+  }
+  .item-line:last-child { border-bottom: none; }
+  .item-line .tag {
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 20px;
+    background: rgba(62,131,104,0.12);
+    color: var(--ok);
+    flex-shrink: 0;
+  }
+  .item-line .tag.restock {
+    background: rgba(182,84,60,0.12);
+    color: var(--danger);
+  }
+
+  .config-body { display: none; margin-top: 10px; }
+  .config-body.open { display: block; }
+  .config-body input { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--paper-dim); font-size: 13px; margin-bottom: 8px; }
+  .config-body label { font-size: 12px; color: var(--ink-dim); display: block; margin-bottom: 4px; }
+  .status-line { font-size: 12px; color: var(--ink-dim); margin-top: 8px; text-align: center; }
+  .status-line.error { color: var(--danger); }
+  .status-line.ok { color: var(--ok); }
+
+  .add-item-form { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .add-item-form input, .add-item-form select {
+    padding: 9px 10px;
+    border-radius: 10px;
+    border: 1.5px solid var(--paper-dim);
+    font-size: 13px;
+    background: #fff;
+  }
+  .add-item-form input.name { flex: 2; min-width: 90px; }
+  .add-item-form input.unit { flex: 1; min-width: 50px; }
+  .add-item-form input.price { flex: 1; min-width: 60px; }
+  .add-item-form select { flex: 1; min-width: 90px; }
+
+  .empty { text-align: center; color: var(--ink-dim); font-size: 13px; padding: 20px 0; }
+
+  #view-stores, #view-categories {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: calc(100vh - 140px);
+  }
+  .tile-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 16px;
+  }
+  .tile {
+    position: relative;
+    background: var(--paper-dim);
+    border-radius: 18px;
+    padding: 26px 12px;
+    min-height: 140px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    cursor: pointer;
+  }
+  .tile-avatar {
+    width: 56px; height: 56px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-size: 22px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .tile-name { font-size: 15px; font-weight: 600; color: var(--ink); text-align: center; }
+  .tile-del {
+    position: absolute;
+    top: 8px; right: 8px;
+    background: rgba(255,255,255,0.7);
+    color: var(--danger);
+    font-size: 16px;
+    font-weight: 700;
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    line-height: 1;
+  }
+
+  .entry-item { padding: 12px 0; border-bottom: 1px solid var(--paper-dim); }
+  .entry-item:last-child { border-bottom: none; }
+  .entry-item-name { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+  .entry-item-name small { display: block; color: var(--ink-dim); font-size: 12px; font-weight: 400; margin-top: 2px; }
+  .entry-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+    gap: 8px;
+  }
+  .entry-fields label { font-size: 11px; color: var(--ink-dim); display: flex; flex-direction: column; gap: 4px; }
+  .entry-fields input {
+    padding: 8px;
+    border-radius: 8px;
+    border: 1.5px solid var(--paper-dim);
+    font-size: 13px;
+  }
+
+  .history-row { cursor: pointer; }
+  .history-row .edited-at { font-size: 11px; color: var(--ink-dim); }
+
+  .entry-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .entry-table th, .entry-table td {
+    padding: 8px 6px;
+    border-bottom: 1px solid var(--paper-dim);
+    text-align: left;
+    white-space: nowrap;
+  }
+  .entry-table th { color: var(--ink-dim); font-weight: 600; font-size: 11px; }
+  .entry-table td.item-name-cell {
+    font-weight: 600;
+    position: sticky;
+    left: 0;
+    background: var(--paper);
+  }
+  .entry-table td.item-name-cell small { display: block; color: var(--ink-dim); font-size: 11px; font-weight: 400; }
+  .entry-table input {
+    width: 100%;
+    min-width: 72px;
+    padding: 6px;
+    border-radius: 6px;
+    border: 1.5px solid var(--paper-dim);
+    font-size: 13px;
+  }
+
+  .field-row-actions { display: flex; gap: 2px; flex-shrink: 0; }
+  .field-row-actions button { font-size: 15px; padding: 4px 7px; color: var(--ink-dim); }
+  .field-row-actions button:disabled { opacity: 0.25; cursor: default; }
+
+  .stock-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    gap: 10px;
+  }
+  .stock-tile {
+    background: var(--paper-dim);
+    border-radius: 12px;
+    padding: 14px 10px;
+    text-align: center;
+    cursor: pointer;
+  }
+  .stock-tile-name { font-size: 12px; color: var(--ink-dim); margin-bottom: 6px; }
+  .stock-tile-value { font-size: 20px; font-weight: 700; color: var(--ink); }
+  .stock-tile-value .unit { font-size: 11px; font-weight: 400; color: var(--ink-dim); margin-left: 3px; }
+  .stock-tile-hint { font-size: 10px; color: var(--gold-dark); margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<header>
+  <button id="backBtn" style="display:none;">←</button>
+  <div class="mark"><img src="icon-192.png" alt="库存登记"></div>
+  <div class="header-titles">
+    <h1 id="headerTitle">库存登记</h1>
+    <p id="headerSubtitle">选择门店</p>
+  </div>
+  <button id="accountsBtn" style="display:none;">账号</button>
+  <button id="manageBtn" style="display:none;">管理</button>
+  <button id="logoutBtn" style="display:none;">退出</button>
+</header>
+
+<main>
+
+  <!-- 登录 / 首次设置管理员账号 -->
+  <div class="view" id="view-login">
+    <div class="card" id="registerAdminCard" style="display:none;">
+      <h2>设置管理员账号</h2>
+      <div class="config-body open">
+        <label>你的名字</label>
+        <input id="regDisplayName" placeholder="比如 Kevin">
+        <label>用户名</label>
+        <input id="regUsername" placeholder="登录用的用户名">
+        <label>密码</label>
+        <input id="regPassword" type="password" placeholder="设置密码">
+        <label>确认密码</label>
+        <input id="regPassword2" type="password" placeholder="再输入一次密码">
+        <button class="btn-primary" id="registerAdminBtn">创建管理员账号</button>
+        <div class="status-line" id="registerStatus"></div>
+      </div>
+    </div>
+    <div class="card" id="loginCard" style="display:none;">
+      <h2>登录</h2>
+      <div class="config-body open">
+        <label>用户名</label>
+        <input id="loginUsername" placeholder="用户名">
+        <label>密码</label>
+        <input id="loginPassword" type="password" placeholder="密码">
+        <button class="btn-primary" id="loginBtn">登录</button>
+        <div class="status-line" id="loginStatus"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 门店选择 -->
+  <div class="view" id="view-stores" style="display:none;">
+    <div class="card">
+      <h2>选择门店</h2>
+      <div class="tile-grid" id="storeTiles"></div>
+      <div class="config-body" id="addStoreForm" style="display:none;">
+        <label>新建门店名称</label>
+        <input id="newStoreName" placeholder="比如 MollyTea Palo Alto">
+        <button class="btn-secondary" id="saveStoreBtn">保存门店</button>
+        <div class="status-line" id="storeFormStatus"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 分类选择 -->
+  <div class="view" id="view-categories" style="display:none;">
+    <div class="card">
+      <h2>选择分类</h2>
+      <div class="tile-grid" id="categoryTiles"></div>
+      <div class="config-body" id="addCategoryForm" style="display:none;">
+        <label>新建分类名称</label>
+        <input id="newCategoryName" placeholder="比如 奶制品 / materials">
+        <button class="btn-secondary" id="saveCategoryBtn">保存分类</button>
+        <div class="status-line" id="categoryFormStatus"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 分类详情:每日录入 + 历史 + 物品/字段管理 -->
+  <div class="view" id="view-detail" style="display:none;">
+
+    <div class="card" id="currencyCard" style="display:none;padding:16px 20px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <span class="hint">结算货币(消耗金额按这个换算显示)</span>
+        <select id="settlementCurrencySelect"></select>
+      </div>
+      <div class="status-line" id="ratesStatus"></div>
+    </div>
+
+    <div class="card" id="stockSummaryCard" style="display:none;">
+      <h2>目前总库存</h2>
+      <div id="stockSummary"></div>
+    </div>
+
+    <div class="card">
+      <h2><span>今天的记录 <span class="hint" id="dateLabel"></span></span> <button class="btn-ghost" id="manageFieldsBtn">管理字段</button></h2>
+      <div id="fieldsManage" style="display:none;margin-bottom:14px;">
+        <div id="currentFieldsList"></div>
+        <div class="add-item-form">
+          <input class="name" id="newFieldName" placeholder="字段名,如 早盘点">
+          <select id="newFieldType">
+            <option value="number">数字</option>
+            <option value="text">文字</option>
+          </select>
+          <select id="newFieldRole">
+            <option value="none">普通字段</option>
+            <option value="stock_check">库存盘点(算消耗用)</option>
+            <option value="incoming">进货量</option>
+          </select>
+        </div>
+        <button class="btn-secondary" id="addFieldBtn" style="margin-top:8px;">添加字段</button>
+        <div class="status-line" id="fieldFormStatus"></div>
+      </div>
+      <div id="entryTableWrap" style="overflow-x:auto;display:none;">
+        <table class="entry-table" id="entryTable">
+          <thead><tr id="entryTableHead"></tr></thead>
+          <tbody id="entryTableBody"></tbody>
+        </table>
+      </div>
+      <div id="noFieldsHint" class="empty" style="display:none;">这个分类还没有配置录入字段,点上面"管理字段"添加</div>
+      <div id="noItemsHint" class="empty" style="display:none;">还没有添加任何物品,请在下方"物品设置"里添加</div>
+      <button class="btn-primary" id="calcBtn" style="display:none;">计算今日消耗</button>
+      <button class="btn-primary" id="saveDirectBtn" style="display:none;">保存</button>
+      <div class="status-line" id="directSaveStatus"></div>
+    </div>
+
+    <div class="card" id="resultCard" style="display:none;">
+      <h2>今日消耗汇总</h2>
+      <div class="summary-grid">
+        <div class="stat">
+          <div class="label">消耗种类</div>
+          <div class="value" id="resCount">0</div>
+        </div>
+        <div class="stat">
+          <div class="label">预计花费</div>
+          <div class="value cost" id="resCost">¥0.00</div>
+        </div>
+      </div>
+      <div id="resultLines" style="margin-top:12px;"></div>
+      <button class="btn-primary" id="saveBtn">保存记录</button>
+      <div class="status-line" id="saveStatus"></div>
+    </div>
+
+    <div class="card">
+      <h2><span>最近记录</span> <button class="btn-ghost" id="refreshHistoryBtn">刷新</button></h2>
+      <div id="historyList" class="empty">加载中…</div>
+    </div>
+
+    <div class="card" id="itemsSettingsCard">
+      <h2>物品设置 <button class="btn-ghost" id="toggleItemsBtn">管理</button></h2>
+      <div id="itemsManage" style="display:none;">
+        <div id="currentItemsList"></div>
+        <div class="add-item-form">
+          <input class="name" id="newItemName" placeholder="名称,如 牛奶">
+          <input class="unit" id="newItemUnit" placeholder="单位,如 L">
+          <input class="price" id="newItemPrice" placeholder="单价" type="number" step="0.01">
+          <select class="price" id="newItemCurrency"></select>
+        </div>
+        <button class="btn-secondary" id="addItemBtn" style="margin-top:8px;">添加物品</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- 账号管理(仅管理员):添加/删除员工账号,重置密码 -->
+  <div class="view" id="view-accounts" style="display:none;">
+    <div class="card">
+      <h2>员工账号</h2>
+      <div id="employeeUsersList"></div>
+      <div class="empty" id="noEmployeesHint" style="display:none;">还没有员工账号</div>
+    </div>
+    <div class="card">
+      <h2>添加员工账号</h2>
+      <div class="config-body open">
+        <label>员工姓名</label>
+        <input id="newEmpDisplayName" placeholder="比如 小李">
+        <label>用户名</label>
+        <input id="newEmpUsername" placeholder="登录用户名">
+        <label>密码</label>
+        <input id="newEmpPassword" type="password" placeholder="设置密码">
+        <label>所属门店</label>
+        <select id="newEmpStore"></select>
+        <button class="btn-secondary" id="addEmployeeBtn">创建员工账号</button>
+        <div class="status-line" id="addEmployeeStatus"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 某一天的详细记录:从"最近记录"点进某个日期后展示 -->
+  <div class="view" id="view-day-detail" style="display:none;">
+    <div class="card">
+      <h2 id="dayDetailTitle"></h2>
+      <div id="dayDetailList"></div>
+    </div>
+  </div>
+
+  <!-- 编辑面板:不属于任何一个 view,自己独立控制显示/隐藏,
+       这样不管当前在"分类详情"还是"某天详情"页面都能弹出编辑。 -->
+  <div class="card" id="editEntryCard" style="display:none;">
+    <h2><span>编辑记录 <span class="hint" id="editEntryHint"></span></span> <button class="btn-ghost" id="cancelEditBtn">取消</button></h2>
+    <div id="editEntryFields"></div>
+    <button class="btn-primary" id="saveEditBtn">保存修改</button>
+    <div class="status-line" id="editStatus"></div>
+  </div>
+
+</main>
+
+<script>
+// ---------- 状态(所有数据通过 Google Apps Script 后端读写,见 config.js 里的 API_BASE_URL) ----------
+let stores = [];
+let currentStore = null;
+let categories = [];
+let currentCategory = null;
+let items = [];
+let fields = [];              // 这个分类当前配置的录入字段 [{id,name,type,role}]
+let stockFieldId = null;      // fields 里 role==="stock_check" 的那个字段 id(可能没有)
+let incomingFieldId = null;   // fields 里 role==="incoming" 的那个字段 id(可能没有)
+let latestStockCheck = {};    // {itemId: 最新一次库存盘点数值}
+let todayInputs = {};         // {itemId: {fieldId: value}}
+let lastComputed = null;
+let manageMode = false;
+let manageFieldsMode = false;
+let editingEntry = null;      // {date, itemId, itemName} 正在编辑的历史记录
+let settlementCurrency = "CNY"; // 这个分类当前选的结算货币
+let exchangeRates = null;      // {date, rates:{USD:0.14,...}} 1 结算货币 = rates[X] 个 X
+let ratesError = "";           // 汇率拉取失败时的提示
+let currentUser = null;        // {id, username, displayName, role, storeId, storeName?}
+let authToken = null;          // 登录后端发的 session token,每次请求都要带上
+const isAdmin = () => !!currentUser && currentUser.role === "admin";
+
+// ---------- 后端调用(text/plain 发 POST 是为了躲开 CORS 预检,跟 google-apps-script.gs 的注释对应) ----------
+const SESSION_KEY = "inv_session_v1";
+
+function saveSession(token, user) {
+  authToken = token;
+  currentUser = user;
+  localStorage.setItem(SESSION_KEY, JSON.stringify({ token, user }));
+}
+
+function clearSession() {
+  authToken = null;
+  currentUser = null;
+  localStorage.removeItem(SESSION_KEY);
+}
+
+function loadSavedSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function handleAuthError(message) {
+  if (message === "请重新登录。") {
+    clearSession();
+    showView("login");
+    initLoginView();
+  }
+}
+
+async function apiGet(action, params) {
+  const url = new URL(API_BASE_URL);
+  url.searchParams.set("action", action);
+  if (authToken) url.searchParams.set("token", authToken);
+  Object.keys(params || {}).forEach(k => {
+    if (params[k] !== undefined && params[k] !== null) url.searchParams.set(k, params[k]);
+  });
+  const resp = await fetch(url.toString());
+  const data = await resp.json();
+  if (data.error) { handleAuthError(data.error); throw new Error(data.error); }
+  return data;
+}
+
+async function apiPost(action, payload) {
+  const body = Object.assign({ action, token: authToken }, payload || {});
+  const resp = await fetch(API_BASE_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify(body),
+  });
+  const data = await resp.json();
+  if (data.error) { handleAuthError(data.error); throw new Error(data.error); }
+  return data;
+}
+
+// 支持的货币列表(常用的一小部分,不是全部 ISO 货币)
+const CURRENCIES = [
+  { code: "CNY", symbol: "¥", name: "人民币" },
+  { code: "USD", symbol: "$", name: "美元" },
+  { code: "EUR", symbol: "€", name: "欧元" },
+  { code: "GBP", symbol: "£", name: "英镑" },
+  { code: "JPY", symbol: "¥", name: "日元" },
+  { code: "HKD", symbol: "HK$", name: "港币" },
+  { code: "TWD", symbol: "NT$", name: "新台币" },
+  { code: "KRW", symbol: "₩", name: "韩元" },
+];
+function currencySymbol(code) {
+  const c = CURRENCIES.find(c => c.code === code);
+  return c ? c.symbol : code + " ";
+}
+function populateCurrencySelect(select) {
+  select.innerHTML = CURRENCIES.map(c => `<option value="${c.code}">${c.name} ${c.code}</option>`).join("");
+}
+
+// 跟桌面版/工资App店铺选择页一样的固定调色板:同一个 id 每次都算出同一个颜色
+const AVATAR_PALETTE = ["#0a6e5c", "#5b3aa0", "#b5541c", "#1c6fb5", "#8a1c4f", "#4a7c1c", "#a03434"];
+function avatarColor(key) {
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) { hash = (hash * 31 + key.charCodeAt(i)) >>> 0; }
+  return AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
+}
+
+const todayStr = () => {
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+};
+
+// ---------- 视图切换(同一个页面内切换,不开新窗口/弹窗) ----------
+let currentDayLabel = "";
+
+function applyRoleUI() {
+  const admin = isAdmin();
+  const manageFieldsBtn = document.getElementById("manageFieldsBtn");
+  const itemsCard = document.getElementById("itemsSettingsCard");
+  const currencySelect = document.getElementById("settlementCurrencySelect");
+  if (manageFieldsBtn) manageFieldsBtn.style.display = admin ? "inline-block" : "none";
+  if (itemsCard) itemsCard.style.display = admin ? "block" : "none";
+  if (currencySelect) currencySelect.disabled = !admin;
+}
+
+function showView(name) {
+  document.querySelectorAll(".view").forEach(v => v.style.display = "none");
+  document.getElementById("view-" + name).style.display = "block";
+  document.getElementById("editEntryCard").style.display = "none";
+  editingEntry = null;
+  const backBtn = document.getElementById("backBtn");
+  const manageBtn = document.getElementById("manageBtn");
+  const accountsBtn = document.getElementById("accountsBtn");
+  const logoutBtn = document.getElementById("logoutBtn");
+  const title = document.getElementById("headerTitle");
+  const subtitle = document.getElementById("headerSubtitle");
+  manageMode = false;
+  manageBtn.textContent = "管理";
+  manageBtn.style.display = "none";
+  accountsBtn.style.display = (name === "stores" && isAdmin()) ? "inline-block" : "none";
+  logoutBtn.style.display = (name !== "login" && currentUser) ? "inline-block" : "none";
+  if (name === "login") {
+    backBtn.style.display = "none";
+    title.textContent = "库存登记";
+    subtitle.textContent = "登录";
+  } else if (name === "stores") {
+    backBtn.style.display = "none";
+    manageBtn.style.display = isAdmin() ? "inline-block" : "none";
+    title.textContent = "库存登记";
+    subtitle.textContent = currentUser ? `${currentUser.displayName} · 选择门店` : "选择门店";
+  } else if (name === "categories") {
+    backBtn.style.display = isAdmin() ? "inline-block" : "none";
+    manageBtn.style.display = isAdmin() ? "inline-block" : "none";
+    title.textContent = currentStore.name;
+    subtitle.textContent = "选择分类";
+  } else if (name === "detail") {
+    backBtn.style.display = "inline-block";
+    manageBtn.style.display = "none";
+    title.textContent = currentStore.name;
+    subtitle.textContent = currentCategory.name;
+  } else if (name === "day-detail") {
+    backBtn.style.display = "inline-block";
+    manageBtn.style.display = "none";
+    title.textContent = currentCategory.name;
+    subtitle.textContent = currentDayLabel;
+  } else if (name === "accounts") {
+    backBtn.style.display = "inline-block";
+    manageBtn.style.display = "none";
+    title.textContent = "账号管理";
+    subtitle.textContent = "员工账号";
+  }
+  applyRoleUI();
+}
+
+document.getElementById("backBtn").addEventListener("click", () => {
+  if (document.getElementById("view-day-detail").style.display !== "none") {
+    showView("detail");
+    loadItemsAndStock();
+    loadHistory();
+  } else if (document.getElementById("view-detail").style.display !== "none") {
+    showView("categories");
+    loadCategories();
+  } else if (document.getElementById("view-accounts").style.display !== "none") {
+    showView("stores");
+    loadStores();
+  } else if (document.getElementById("view-categories").style.display !== "none") {
+    showView("stores");
+    loadStores();
+  }
+});
+
+document.getElementById("manageBtn").addEventListener("click", () => {
+  manageMode = !manageMode;
+  document.getElementById("manageBtn").textContent = manageMode ? "完成" : "管理";
+  if (document.getElementById("view-stores").style.display !== "none") {
+    renderStoreTiles();
+  } else if (document.getElementById("view-categories").style.display !== "none") {
+    renderCategoryTiles();
+  }
+});
+
+document.getElementById("accountsBtn").addEventListener("click", () => {
+  showView("accounts");
+  loadAccounts();
+});
+
+document.getElementById("logoutBtn").addEventListener("click", async () => {
+  try { await apiPost("logout", {}); } catch (e) { /* token 可能已经过期,忽略 */ }
+  clearSession();
+  currentStore = null;
+  document.getElementById("loginUsername").value = "";
+  document.getElementById("loginPassword").value = "";
+  showView("login");
+  await initLoginView();
+});
+
+// ---------- 门店选择 ----------
+async function loadStores() {
+  stores = (await apiGet("listStores", {})).stores;
+  renderStoreTiles();
+}
+
+function renderStoreTiles() {
+  const el = document.getElementById("storeTiles");
+  el.innerHTML = "";
+  if (stores.length === 0) {
+    el.innerHTML = `<div class="empty" style="grid-column:1/-1;">还没有门店,点右上角"管理"添加一个</div>`;
+  }
+  stores.forEach(s => {
+    const tile = document.createElement("div");
+    tile.className = "tile";
+    const initial = (s.name.trim().charAt(0) || "?").toUpperCase();
+    tile.innerHTML = `
+      ${manageMode ? '<button class="tile-del">×</button>' : ""}
+      <div class="tile-avatar" style="background:${avatarColor(s.id)};">${initial}</div>
+      <div class="tile-name">${s.name}</div>
+    `;
+    tile.addEventListener("click", () => { if (!manageMode) selectStore(s); });
+    if (manageMode) {
+      tile.querySelector(".tile-del").addEventListener("click", (ev) => { ev.stopPropagation(); deleteStore(s.id); });
+    }
+    el.appendChild(tile);
+  });
+  document.getElementById("addStoreForm").style.display = manageMode ? "block" : "none";
+}
+
+async function deleteStore(id) {
+  if (!confirm("删除这个门店?此操作会删除这个门店的所有分类/物品/记录数据,且无法恢复。")) return;
+  await apiPost("deleteStore", { storeId: id });
+  stores = (await apiGet("listStores", {})).stores;
+  renderStoreTiles();
+}
+
+async function selectStore(store) {
+  currentStore = store;
+  showView("categories");
+  await loadCategories();
+}
+
+document.getElementById("saveStoreBtn").addEventListener("click", async () => {
+  const name = document.getElementById("newStoreName").value.trim();
+  const statusEl = document.getElementById("storeFormStatus");
+  if (!name) { statusEl.className = "status-line error"; statusEl.textContent = "请输入门店名称"; return; }
+  try {
+    await apiPost("createStore", { name });
+    document.getElementById("newStoreName").value = "";
+    statusEl.className = "status-line"; statusEl.textContent = "";
+    stores = (await apiGet("listStores", {})).stores;
+    renderStoreTiles();
+  } catch (err) {
+    statusEl.className = "status-line error"; statusEl.textContent = "保存失败: " + err.message;
+  }
+});
+
+// ---------- 分类选择 ----------
+async function loadCategories() {
+  const el = document.getElementById("categoryTiles");
+  el.innerHTML = `<div class="empty">加载中…</div>`;
+  try {
+    categories = (await apiGet("listCategories", { storeId: currentStore.id })).categories;
+    renderCategoryTiles();
+  } catch (err) {
+    el.innerHTML = `<div class="empty">加载失败: ${err.message}</div>`;
+  }
+}
+
+function renderCategoryTiles() {
+  const el = document.getElementById("categoryTiles");
+  el.innerHTML = "";
+  if (categories.length === 0) {
+    el.innerHTML = `<div class="empty" style="grid-column:1/-1;">还没有分类,点右上角"管理"添加一个</div>`;
+  }
+  categories.forEach(c => {
+    const tile = document.createElement("div");
+    tile.className = "tile";
+    const initial = (c.name.trim().charAt(0) || "?").toUpperCase();
+    tile.innerHTML = `
+      ${manageMode ? '<button class="tile-del">×</button>' : ""}
+      <div class="tile-avatar" style="background:${avatarColor(c.id)};">${initial}</div>
+      <div class="tile-name">${c.name}</div>
+    `;
+    tile.addEventListener("click", () => { if (!manageMode) selectCategory(c); });
+    if (manageMode) {
+      tile.querySelector(".tile-del").addEventListener("click", (ev) => { ev.stopPropagation(); deleteCategory(c.id); });
+    }
+    el.appendChild(tile);
+  });
+  document.getElementById("addCategoryForm").style.display = manageMode ? "block" : "none";
+}
+
+document.getElementById("saveCategoryBtn").addEventListener("click", async () => {
+  const name = document.getElementById("newCategoryName").value.trim();
+  const statusEl = document.getElementById("categoryFormStatus");
+  if (!name) { statusEl.className = "status-line error"; statusEl.textContent = "请输入分类名称"; return; }
+  statusEl.className = "status-line"; statusEl.textContent = "保存中…";
+  try {
+    await apiPost("createCategory", { storeId: currentStore.id, name });
+    document.getElementById("newCategoryName").value = "";
+    statusEl.textContent = "";
+    categories = (await apiGet("listCategories", { storeId: currentStore.id })).categories;
+    renderCategoryTiles();
+  } catch (err) {
+    statusEl.className = "status-line error"; statusEl.textContent = "保存失败: " + err.message;
+  }
+});
+
+async function deleteCategory(categoryId) {
+  const cat = categories.find(c => c.id === categoryId);
+  const name = cat ? cat.name : "";
+  const typed = prompt(`删除分类会连同它的所有字段/物品/历史记录一起删除,且无法恢复。\n确定要删除"${name}"吗?请输入分类名称确认:`);
+  if (typed === null) return;
+  if (typed !== name) { alert("输入的名称不匹配,已取消删除"); return; }
+  await apiPost("deleteCategory", { categoryId });
+  categories = (await apiGet("listCategories", { storeId: currentStore.id })).categories;
+  renderCategoryTiles();
+}
+
+async function selectCategory(cat) {
+  currentCategory = cat;
+  showView("detail");
+  document.getElementById("dateLabel").textContent = "今天 " + todayStr();
+  document.getElementById("resultCard").style.display = "none";
+  document.getElementById("editEntryCard").style.display = "none";
+  document.getElementById("itemsManage").style.display = "none";
+  manageFieldsMode = false;
+  document.getElementById("manageFieldsBtn").textContent = "管理字段";
+  document.getElementById("fieldsManage").style.display = "none";
+  editingEntry = null;
+  todayInputs = {};
+  await loadFields();
+  await loadItemsAndStock();
+  await loadHistory();
+  await loadSettlementCurrency();
+}
+
+// ---------- 结算货币 + 实时汇率 ----------
+async function loadSettlementCurrency() {
+  settlementCurrency = (await apiGet("getSettlementCurrency", { categoryId: currentCategory.id })).currency;
+  const select = document.getElementById("settlementCurrencySelect");
+  populateCurrencySelect(select);
+  select.value = settlementCurrency;
+  document.getElementById("currencyCard").style.display = items.length > 0 ? "block" : "none";
+  await refreshExchangeRates();
+}
+
+async function refreshExchangeRates() {
+  const statusEl = document.getElementById("ratesStatus");
+  statusEl.className = "status-line";
+  statusEl.textContent = "获取实时汇率中…";
+  try {
+    const data = await apiGet("getExchangeRates", { base: settlementCurrency });
+    exchangeRates = data;
+    ratesError = "";
+    statusEl.className = "status-line ok";
+    statusEl.textContent = `汇率更新于 ${data.date}(实时获取,每次都重新拉取,不会一直用旧汇率)`;
+  } catch (err) {
+    exchangeRates = null;
+    ratesError = "汇率获取失败(可能没联网): " + err.message;
+    statusEl.className = "status-line error";
+    statusEl.textContent = ratesError;
+  }
+  renderResultIfOpen();
+}
+
+document.getElementById("settlementCurrencySelect").addEventListener("change", async (e) => {
+  settlementCurrency = e.target.value;
+  await apiPost("setSettlementCurrency", { categoryId: currentCategory.id, currency: settlementCurrency });
+  await refreshExchangeRates();
+  await loadHistory();
+});
+
+// 把某个物品的金额(在它自己的采购货币里)换算成当前结算货币。
+// 换不了(没有汇率数据/找不到这个货币)就原样返回,并标一个 "?"。
+function convertAmount(amount, itemCurrency) {
+  if (amount === null || amount === undefined) return null;
+  if (!itemCurrency || itemCurrency === settlementCurrency) return { value: amount, ok: true };
+  if (!exchangeRates || !exchangeRates.rates) return { value: amount, ok: false, sourceCurrency: itemCurrency };
+  const rate = itemCurrency === settlementCurrency ? 1 : exchangeRates.rates[itemCurrency];
+  if (!rate) return { value: amount, ok: false, sourceCurrency: itemCurrency };
+  return { value: amount / rate, ok: true };
+}
+
+function formatConverted(amount, itemCurrency) {
+  const c = convertAmount(amount, itemCurrency);
+  if (c === null) return "";
+  if (!c.ok) return `${currencySymbol(c.sourceCurrency)}${amount.toFixed(2)}(未换算)`;
+  return `${currencySymbol(settlementCurrency)}${c.value.toFixed(2)}`;
+}
+
+function renderResultIfOpen() {
+  if (document.getElementById("resultCard").style.display !== "none" && lastComputed) {
+    computeToday();
+  }
+}
+
+// ---------- 分类详情:字段管理 ----------
+async function loadFields() {
+  fields = (await apiGet("listFields", { categoryId: currentCategory.id })).fields;
+  incomingFieldId = (fields.find(f => f.role === "incoming") || {}).id || null;
+  renderFieldsManageList();
+  updateFieldRoleOptions();
+}
+
+// 库存盘点/进货量每个分类只能有一个:已经存在的话,直接把对应选项禁用掉,
+// 而不是等用户选完了再报错——防呆比报错更直接。
+function updateFieldRoleOptions() {
+  const roleSelect = document.getElementById("newFieldRole");
+  const hasStock = fields.some(f => f.role === "stock_check");
+  const hasIncoming = fields.some(f => f.role === "incoming");
+  const stockOption = roleSelect.querySelector('option[value="stock_check"]');
+  const incomingOption = roleSelect.querySelector('option[value="incoming"]');
+  stockOption.disabled = hasStock;
+  incomingOption.disabled = hasIncoming;
+  stockOption.textContent = hasStock ? "库存盘点(已被其它字段占用)" : "库存盘点(算消耗用)";
+  incomingOption.textContent = hasIncoming ? "进货量(已被其它字段占用)" : "进货量";
+  if ((roleSelect.value === "stock_check" && hasStock) || (roleSelect.value === "incoming" && hasIncoming)) {
+    roleSelect.value = "none";
+  }
+}
+
+function renderFieldsManageList() {
+  const el = document.getElementById("currentFieldsList");
+  el.innerHTML = "";
+  const roleLabel = { stock_check: "库存盘点", incoming: "进货量", none: "普通字段" };
+  fields.forEach((f, idx) => {
+    const div = document.createElement("div");
+    div.className = "row";
+    div.innerHTML = `
+      <div class="name">${f.name} <small>${f.type === "number" ? "数字" : "文字"} · ${roleLabel[f.role] || "普通字段"}</small></div>
+      <div class="field-row-actions">
+        <button data-action="up" ${idx === 0 ? "disabled" : ""}>↑</button>
+        <button data-action="down" ${idx === fields.length - 1 ? "disabled" : ""}>↓</button>
+        <button class="btn-ghost" data-action="del">删除</button>
+      </div>
+    `;
+    div.querySelector('[data-action="up"]').addEventListener("click", () => moveField(f.id, -1));
+    div.querySelector('[data-action="down"]').addEventListener("click", () => moveField(f.id, 1));
+    div.querySelector('[data-action="del"]').addEventListener("click", () => deleteField(f.id));
+    el.appendChild(div);
+  });
+}
+
+async function moveField(fieldId, direction) {
+  const idx = fields.findIndex(f => f.id === fieldId);
+  const newIdx = idx + direction;
+  if (newIdx < 0 || newIdx >= fields.length) return;
+  const ids = fields.map(f => f.id);
+  const tmp = ids[idx]; ids[idx] = ids[newIdx]; ids[newIdx] = tmp;
+  await apiPost("reorderFields", { categoryId: currentCategory.id, fieldIds: ids });
+  await loadFields();
+  await loadItemsAndStock();
+}
+
+async function deleteField(fieldId) {
+  if (!confirm("删除这个字段?历史记录里这个字段的数据不会再显示,但不会真的清掉。")) return;
+  await apiPost("deleteField", { categoryId: currentCategory.id, fieldId });
+  await loadFields();
+  await loadItemsAndStock();
+}
+
+document.getElementById("manageFieldsBtn").addEventListener("click", () => {
+  manageFieldsMode = !manageFieldsMode;
+  document.getElementById("manageFieldsBtn").textContent = manageFieldsMode ? "完成" : "管理字段";
+  document.getElementById("fieldsManage").style.display = manageFieldsMode ? "block" : "none";
+});
+
+document.getElementById("addFieldBtn").addEventListener("click", async () => {
+  const name = document.getElementById("newFieldName").value.trim();
+  const type = document.getElementById("newFieldType").value;
+  const role = document.getElementById("newFieldRole").value;
+  const statusEl = document.getElementById("fieldFormStatus");
+  if (!name) { statusEl.className = "status-line error"; statusEl.textContent = "请输入字段名称"; return; }
+  try {
+    await apiPost("addField", { categoryId: currentCategory.id, name, fieldType: type, role });
+    document.getElementById("newFieldName").value = "";
+    statusEl.className = "status-line"; statusEl.textContent = "";
+    await loadFields();
+    await loadItemsAndStock();
+  } catch (err) {
+    statusEl.className = "status-line error"; statusEl.textContent = "添加失败: " + err.message;
+  }
+});
+
+// ---------- 分类详情:今日录入(字段是动态的,由这个分类自己配置)
+// 表格布局:字段名在最上面一行当表头,下面一行一个物品,类似 Excel。----------
+function renderItemRows() {
+  const tableWrap = document.getElementById("entryTableWrap");
+  const head = document.getElementById("entryTableHead");
+  const body = document.getElementById("entryTableBody");
+  const noItems = document.getElementById("noItemsHint");
+  const noFields = document.getElementById("noFieldsHint");
+  const calcBtn = document.getElementById("calcBtn");
+  const saveDirectBtn = document.getElementById("saveDirectBtn");
+  head.innerHTML = "";
+  body.innerHTML = "";
+
+  if (fields.length === 0) {
+    noFields.style.display = "block";
+    noItems.style.display = "none";
+    tableWrap.style.display = "none";
+    calcBtn.style.display = "none";
+    saveDirectBtn.style.display = "none";
+    return;
+  }
+  noFields.style.display = "none";
+
+  if (items.length === 0) {
+    noItems.style.display = "block";
+    tableWrap.style.display = "none";
+    calcBtn.style.display = "none";
+    saveDirectBtn.style.display = "none";
+    return;
+  }
+  noItems.style.display = "none";
+  tableWrap.style.display = "block";
+
+  head.innerHTML = `<th>物品</th>` + fields.map(f => `<th>${f.name}</th>`).join("");
+
+  items.forEach(it => {
+    const prevVal = latestStockCheck[it.id];
+    const nameHint = stockFieldId
+      ? `<small>上次 ${prevVal !== undefined ? prevVal + it.unit : "暂无记录"}</small>`
+      : `<small>${currencySymbol(it.currency)}${Number(it.price).toFixed(2)}/${it.unit}</small>`;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td class="item-name-cell">${it.name}${nameHint}</td>` +
+      fields.map(f => `<td><input type="${f.type === "number" ? "number" : "text"}" ${f.type === "number" ? 'step="0.01"' : ""} data-id="${it.id}" data-field="${f.id}"></td>`).join("");
+    body.appendChild(tr);
+  });
+
+  body.querySelectorAll("input").forEach(inp => {
+    inp.addEventListener("input", e => {
+      const id = e.target.dataset.id, field = e.target.dataset.field;
+      todayInputs[id] = todayInputs[id] || {};
+      todayInputs[id][field] = e.target.value;
+    });
+  });
+
+  // 有没有配置"库存盘点"字段决定走"计算预览"还是直接"保存"
+  calcBtn.style.display = stockFieldId ? "block" : "none";
+  saveDirectBtn.style.display = stockFieldId ? "none" : "block";
+}
+
+function computeToday() {
+  const lines = [];
+  let totalConverted = 0;
+  let count = 0;
+  items.forEach(it => {
+    const inputs = todayInputs[it.id] || {};
+    const stockValRaw = inputs[stockFieldId];
+    if (stockValRaw === undefined || stockValRaw === "") return; // 库存盘点是计算消耗的必填项
+    const stockVal = parseFloat(stockValRaw);
+    if (isNaN(stockVal)) return;
+    const prevVal = latestStockCheck[it.id];
+    let consumed = null, cost = null;
+    if (prevVal !== undefined) {
+      const incomingVal = incomingFieldId ? (parseFloat(inputs[incomingFieldId]) || 0) : 0;
+      consumed = Number(prevVal) + incomingVal - stockVal;
+      cost = consumed * Number(it.price);
+      const converted = convertAmount(cost, it.currency);
+      if (converted && converted.ok) totalConverted += converted.value;
+      count++;
+    }
+    lines.push({ id: it.id, name: it.name, unit: it.unit, currency: it.currency, consumed, cost, values: inputs });
+  });
+
+  lastComputed = { date: todayStr(), lines };
+
+  const resultCard = document.getElementById("resultCard");
+  resultCard.style.display = "block";
+  document.getElementById("resCount").textContent = count;
+  document.getElementById("resCost").textContent = currencySymbol(settlementCurrency) + totalConverted.toFixed(2);
+
+  const linesEl = document.getElementById("resultLines");
+  linesEl.innerHTML = "";
+  lines.forEach(l => {
+    const div = document.createElement("div");
+    div.className = "item-line";
+    if (l.consumed === null) {
+      div.innerHTML = `<span>${l.name}</span><span class="tag">暂无昨天数据,已记录今天基准</span>`;
+    } else if (l.consumed < 0) {
+      div.innerHTML = `<span>${l.name}</span><span class="tag restock">看起来补货了</span>`;
+    } else {
+      div.innerHTML = `<span>${l.name} 用了 ${l.consumed.toFixed(2)} ${l.unit}</span><span class="tag">${formatConverted(l.cost, l.currency)}</span>`;
+    }
+    linesEl.appendChild(div);
+  });
+}
+
+async function saveToday() {
+  const statusEl = document.getElementById("saveStatus");
+  if (!lastComputed) return;
+  statusEl.className = "status-line";
+  statusEl.textContent = "保存中…";
+  try {
+    const entries = lastComputed.lines.map(l => ({
+      itemId: l.id, itemName: l.name, values: l.values,
+      price: items.find(it => it.id === l.id).price
+    }));
+    await apiPost("saveLogEntries", { categoryId: currentCategory.id, date: lastComputed.date, entries });
+    statusEl.className = "status-line ok";
+    statusEl.textContent = "已保存 ✓";
+    todayInputs = {};
+    document.getElementById("resultCard").style.display = "none";
+    await loadItemsAndStock();
+    await loadHistory();
+  } catch (err) {
+    statusEl.className = "status-line error";
+    statusEl.textContent = "保存失败: " + err.message;
+  }
+}
+
+async function saveDirectly() {
+  const statusEl = document.getElementById("directSaveStatus");
+  const entries = items
+    .filter(it => todayInputs[it.id])
+    .map(it => ({ itemId: it.id, itemName: it.name, values: todayInputs[it.id], price: it.price }));
+  if (entries.length === 0) {
+    statusEl.className = "status-line error"; statusEl.textContent = "还没有填写任何内容";
+    return;
+  }
+  statusEl.className = "status-line"; statusEl.textContent = "保存中…";
+  try {
+    await apiPost("saveLogEntries", { categoryId: currentCategory.id, date: todayStr(), entries });
+    statusEl.className = "status-line ok"; statusEl.textContent = "已保存 ✓";
+    todayInputs = {};
+    renderItemRows();
+    await loadItemsAndStock();
+    await loadHistory();
+  } catch (err) {
+    statusEl.className = "status-line error"; statusEl.textContent = "保存失败: " + err.message;
+  }
+}
+
+async function loadItemsAndStock() {
+  try {
+    const data = await apiGet("listItems", { categoryId: currentCategory.id });
+    items = data.items || [];
+    latestStockCheck = data.latestStockCheck || {};
+    stockFieldId = data.stockCheckFieldId || null;
+    renderItemRows();
+    renderManageList();
+    renderStockSummary();
+  } catch (err) {
+    document.getElementById("noItemsHint").style.display = "block";
+    document.getElementById("noItemsHint").textContent = "无法加载物品列表: " + err.message;
+  }
+}
+
+function renderStockSummary() {
+  const card = document.getElementById("stockSummaryCard");
+  const el = document.getElementById("stockSummary");
+  if (items.length === 0) {
+    card.style.display = "none";
+    return;
+  }
+  if (!stockFieldId) {
+    card.style.display = "block";
+    el.className = "";
+    el.innerHTML = `<div class="empty">这个分类还没有设置"库存盘点"字段,点"管理字段"添加一个才能开始自动算库存/消耗</div>`;
+    return;
+  }
+  card.style.display = "block";
+  el.className = "stock-grid";
+  el.innerHTML = "";
+  items.forEach(it => {
+    const val = latestStockCheck[it.id];
+    const tile = document.createElement("div");
+    tile.className = "stock-tile";
+    tile.innerHTML = `
+      <div class="stock-tile-name">${it.name}</div>
+      <div class="stock-tile-value">${val !== undefined ? val : "--"}<span class="unit">${it.unit}</span></div>
+      <div class="stock-tile-hint">${val !== undefined ? "点击修改" : "暂无记录·点击设置"}</div>
+    `;
+    tile.addEventListener("click", () => editStockFor(it));
+    el.appendChild(tile);
+  });
+}
+
+// 点"目前总库存"里的某个物品,直接快速设置/修改它今天的库存盘点数值——
+// 复用编辑历史记录的同一套面板和保存逻辑,只是只显示"库存盘点"这一个字段。
+function editStockFor(item) {
+  document.getElementById("editEntryHint").textContent = todayStr() + "(今天)";
+  const container = document.getElementById("editEntryFields");
+  container.innerHTML = `<div class="entry-item-name">${item.name}</div><div class="entry-fields" id="editFieldsGrid"></div>`;
+  const grid = document.getElementById("editFieldsGrid");
+  const currentVal = latestStockCheck[item.id];
+  const stockField = fields.find(f => f.id === stockFieldId);
+  const label = document.createElement("label");
+  label.innerHTML = `${stockField ? stockField.name : "目前库存"}<input type="number" step="0.01" data-field="${stockFieldId}" value="${currentVal !== undefined ? currentVal : ""}">`;
+  grid.appendChild(label);
+  editingEntry = { date: todayStr(), itemId: item.id, itemName: item.name };
+  document.getElementById("editStatus").className = "status-line";
+  document.getElementById("editStatus").textContent = "";
+  document.getElementById("editEntryCard").style.display = "block";
+  document.getElementById("editEntryCard").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function formatDateLabel(dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return `${y}-${m}-${d}`;
+}
+
+// "最近记录" 只列出日期,点进某一天才展开看当天的明细(page 导航,不是原地展开)
+async function loadHistory() {
+  const el = document.getElementById("historyList");
+  el.className = "";
+  el.innerHTML = "加载中…";
+  try {
+    const rows = (await apiGet("getLog", { categoryId: currentCategory.id, days: 30 })).log;
+    if (!rows || rows.length === 0) {
+      el.className = "empty";
+      el.textContent = "还没有历史记录";
+      return;
+    }
+    const byDate = {};
+    rows.forEach(r => {
+      byDate[r.date] = byDate[r.date] || [];
+      byDate[r.date].push(r);
+    });
+    el.innerHTML = "";
+    Object.keys(byDate).sort().reverse().forEach(date => {
+      const dayRows = byDate[date];
+      const dayTotal = dayRows.reduce((s, r) => {
+        const it = items.find(x => x.id === r.itemId);
+        const c = convertAmount(r.cost, it ? it.currency : null);
+        return s + (c && c.ok ? c.value : 0);
+      }, 0);
+      const row = document.createElement("div");
+      row.className = "item-line history-row";
+      row.innerHTML = `<span>${formatDateLabel(date)} 记录</span><span class="hint">${dayTotal ? currencySymbol(settlementCurrency) + dayTotal.toFixed(2) + " " : ""}›</span>`;
+      row.addEventListener("click", () => openDayDetail(date, dayRows));
+      el.appendChild(row);
+    });
+  } catch (err) {
+    el.className = "empty";
+    el.textContent = "加载失败: " + err.message;
+  }
+}
+
+// 点进某一天:不是照抄"今天的记录"的原始字段,而是一份消耗总结——
+// 每个物品的消耗量+消耗金额,最后一行是当天总消耗。
+function openDayDetail(date, dayRows) {
+  currentDayLabel = formatDateLabel(date) + " 记录";
+  showView("day-detail");
+  document.getElementById("dayDetailTitle").textContent = currentDayLabel;
+  const listEl = document.getElementById("dayDetailList");
+  listEl.innerHTML = "";
+  let dayTotal = 0;
+  dayRows.forEach(r => {
+    const it = items.find(x => x.id === r.itemId);
+    const editedLabel = r.editedAt ? new Date(r.editedAt).toLocaleString("zh-CN", { hour12: false }) : "";
+    const row = document.createElement("div");
+    row.className = "item-line history-row";
+    if (r.usage !== null && r.usage !== undefined) {
+      const converted = convertAmount(r.cost, it ? it.currency : null);
+      if (converted && converted.ok) dayTotal += converted.value;
+      const tagClass = r.usage < 0 ? "tag restock" : "tag";
+      const tagText = r.usage < 0 ? "看起来补货了" : formatConverted(r.cost, it ? it.currency : null);
+      row.innerHTML = `<span>${r.itemName} 用了 ${Number(r.usage).toFixed(2)} ${it ? it.unit : ""}</span><span class="${tagClass}">${tagText}</span>`;
+    } else {
+      row.innerHTML = `<span>${r.itemName}</span><span class="tag">暂无消耗数据</span>`;
+    }
+    row.addEventListener("click", () => openEditEntry(r));
+    listEl.appendChild(row);
+    if (editedLabel) {
+      const editedDiv = document.createElement("div");
+      editedDiv.style.cssText = "font-size:11px;color:var(--ink-dim);margin-top:-6px;margin-bottom:6px;";
+      editedDiv.textContent = "编辑于 " + editedLabel;
+      listEl.appendChild(editedDiv);
+    }
+  });
+  const totalRow = document.createElement("div");
+  totalRow.className = "item-line";
+  totalRow.style.cssText = "font-weight:700;border-top:2px solid var(--paper-dim);padding-top:10px;margin-top:4px;";
+  totalRow.innerHTML = `<span>今日总消耗</span><span>${currencySymbol(settlementCurrency)}${dayTotal.toFixed(2)}</span>`;
+  listEl.appendChild(totalRow);
+}
+
+// ---------- 编辑一条历史记录:复用同一个 upsert,传一个过去的日期就是"编辑" ----------
+function openEditEntry(entry) {
+  document.getElementById("editEntryHint").textContent = entry.date;
+  const container = document.getElementById("editEntryFields");
+  container.innerHTML = `<div class="entry-item-name">${entry.itemName}</div><div class="entry-fields" id="editFieldsGrid"></div>`;
+  const grid = document.getElementById("editFieldsGrid");
+  fields.forEach(f => {
+    const val = entry.values && entry.values[f.id] !== undefined && entry.values[f.id] !== null ? entry.values[f.id] : "";
+    const label = document.createElement("label");
+    label.innerHTML = `${f.name}<input type="${f.type === "number" ? "number" : "text"}" ${f.type === "number" ? 'step="0.01"' : ""} data-field="${f.id}" value="${val}">`;
+    grid.appendChild(label);
+  });
+  editingEntry = { date: entry.date, itemId: entry.itemId, itemName: entry.itemName };
+  document.getElementById("editStatus").className = "status-line";
+  document.getElementById("editStatus").textContent = "";
+  document.getElementById("editEntryCard").style.display = "block";
+  document.getElementById("editEntryCard").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+document.getElementById("cancelEditBtn").addEventListener("click", () => {
+  document.getElementById("editEntryCard").style.display = "none";
+  editingEntry = null;
+});
+
+document.getElementById("saveEditBtn").addEventListener("click", async () => {
+  if (!editingEntry) return;
+  const statusEl = document.getElementById("editStatus");
+  statusEl.className = "status-line"; statusEl.textContent = "保存中…";
+  const values = {};
+  document.querySelectorAll("#editFieldsGrid input").forEach(inp => {
+    values[inp.dataset.field] = inp.value;
+  });
+  const item = items.find(it => it.id === editingEntry.itemId);
+  try {
+    await apiPost("saveLogEntries", {
+      categoryId: currentCategory.id, date: editingEntry.date,
+      entries: [{ itemId: editingEntry.itemId, itemName: editingEntry.itemName, values, price: item ? item.price : 0 }]
+    });
+    statusEl.className = "status-line ok"; statusEl.textContent = "已保存修改 ✓";
+    document.getElementById("editEntryCard").style.display = "none";
+    editingEntry = null;
+    await loadItemsAndStock();
+    await loadHistory();
+  } catch (err) {
+    statusEl.className = "status-line error"; statusEl.textContent = "保存失败: " + err.message;
+  }
+});
+
+// ---------- 物品管理 ----------
+function renderManageList() {
+  const el = document.getElementById("currentItemsList");
+  el.innerHTML = "";
+  items.forEach(it => {
+    const div = document.createElement("div");
+    div.className = "row";
+    div.innerHTML = `
+      <div class="name">${it.name} <small>${it.unit} · ${currencySymbol(it.currency)}${Number(it.price).toFixed(2)}</small></div>
+      <button class="btn-ghost" data-action="edit">编辑</button>
+    `;
+    div.querySelector('[data-action="edit"]').addEventListener("click", () => toggleItemEdit(it, div));
+    el.appendChild(div);
+  });
+}
+
+function toggleItemEdit(item, rowDiv) {
+  if (rowDiv.dataset.editing === "1") {
+    renderManageList();
+    return;
+  }
+  rowDiv.dataset.editing = "1";
+  const currencyOptions = CURRENCIES.map(c => `<option value="${c.code}" ${c.code === item.currency ? "selected" : ""}>${c.name} ${c.code}</option>`).join("");
+  rowDiv.innerHTML = `
+    <div class="add-item-form" style="flex:1;">
+      <input class="name" value="${item.name}" data-f="name">
+      <input class="unit" value="${item.unit}" data-f="unit">
+      <input class="price" type="number" step="0.01" value="${item.price}" data-f="price">
+      <select class="price" data-f="currency">${currencyOptions}</select>
+    </div>
+  `;
+  const actions = document.createElement("div");
+  actions.style.cssText = "display:flex;gap:8px;margin-top:8px;";
+  actions.innerHTML = `<button class="btn-secondary" style="flex:1;">保存</button><button class="btn-ghost" style="flex:1;">取消</button>`;
+  rowDiv.appendChild(actions);
+  actions.children[0].addEventListener("click", async () => {
+    const name = rowDiv.querySelector('[data-f="name"]').value.trim();
+    const unit = rowDiv.querySelector('[data-f="unit"]').value.trim() || "个";
+    const price = parseFloat(rowDiv.querySelector('[data-f="price"]').value) || 0;
+    const currency = rowDiv.querySelector('[data-f="currency"]').value;
+    if (!name) { alert("名称不能为空"); return; }
+    try {
+      await apiPost("updateItem", { categoryId: currentCategory.id, itemId: item.id, name, unit, price, currency });
+      await loadItemsAndStock();
+    } catch (err) {
+      alert("保存失败: " + err.message);
+    }
+  });
+  actions.children[1].addEventListener("click", () => renderManageList());
+}
+
+async function addItem() {
+  const name = document.getElementById("newItemName").value.trim();
+  const unit = document.getElementById("newItemUnit").value.trim() || "个";
+  const price = parseFloat(document.getElementById("newItemPrice").value) || 0;
+  const currency = document.getElementById("newItemCurrency").value;
+  if (!name) return;
+  try {
+    await apiPost("addItem", { categoryId: currentCategory.id, name, unit, price, currency });
+    document.getElementById("newItemName").value = "";
+    document.getElementById("newItemUnit").value = "";
+    document.getElementById("newItemPrice").value = "";
+    await loadItemsAndStock();
+  } catch (err) {
+    alert("添加失败: " + err.message);
+  }
+}
+
+// ---------- 登录 / 首次设置管理员账号 ----------
+async function initLoginView() {
+  const hasAdminFlag = (await apiGet("hasAdmin", {})).hasAdmin;
+  document.getElementById("registerAdminCard").style.display = hasAdminFlag ? "none" : "block";
+  document.getElementById("loginCard").style.display = hasAdminFlag ? "block" : "none";
+}
+
+async function afterLogin(user) {
+  currentUser = user;
+  if (user.role === "admin") {
+    showView("stores");
+    await loadStores();
+    return;
+  }
+  if (!user.storeId || !user.storeName) {
+    const statusEl = document.getElementById("loginStatus");
+    statusEl.className = "status-line error";
+    statusEl.textContent = "这个账号没有绑定门店,请联系管理员。";
+    clearSession();
+    return;
+  }
+  currentStore = { id: user.storeId, name: user.storeName };
+  showView("categories");
+  await loadCategories();
+}
+
+document.getElementById("registerAdminBtn").addEventListener("click", async () => {
+  const displayName = document.getElementById("regDisplayName").value.trim();
+  const username = document.getElementById("regUsername").value.trim();
+  const password = document.getElementById("regPassword").value;
+  const password2 = document.getElementById("regPassword2").value;
+  const statusEl = document.getElementById("registerStatus");
+  if (!username || !password) { statusEl.className = "status-line error"; statusEl.textContent = "请输入用户名和密码"; return; }
+  if (password !== password2) { statusEl.className = "status-line error"; statusEl.textContent = "两次输入的密码不一致"; return; }
+  try {
+    const result = await apiPost("registerAdmin", { username, password, displayName });
+    statusEl.className = "status-line"; statusEl.textContent = "";
+    saveSession(result.token, result.user);
+    await afterLogin(result.user);
+  } catch (err) {
+    statusEl.className = "status-line error"; statusEl.textContent = err.message;
+  }
+});
+
+document.getElementById("loginBtn").addEventListener("click", async () => {
+  const username = document.getElementById("loginUsername").value.trim();
+  const password = document.getElementById("loginPassword").value;
+  const statusEl = document.getElementById("loginStatus");
+  if (!username || !password) { statusEl.className = "status-line error"; statusEl.textContent = "请输入用户名和密码"; return; }
+  try {
+    const result = await apiPost("login", { username, password });
+    document.getElementById("loginPassword").value = "";
+    statusEl.className = "status-line"; statusEl.textContent = "";
+    saveSession(result.token, result.user);
+    await afterLogin(result.user);
+  } catch (err) {
+    statusEl.className = "status-line error"; statusEl.textContent = err.message;
+  }
+});
+
+// ---------- 账号管理(仅管理员) ----------
+function populateStoreSelect(select, storesList) {
+  select.innerHTML = storesList.map(s => `<option value="${s.id}">${s.name}</option>`).join("");
+}
+
+async function loadAccounts() {
+  const [usersResp, storesResp] = await Promise.all([
+    apiGet("listUsers", {}),
+    apiGet("listStores", {}),
+  ]);
+  const users = usersResp.users;
+  const storesList = storesResp.stores;
+  renderAccountsList(users.filter(u => u.role === "employee"), storesList);
+  populateStoreSelect(document.getElementById("newEmpStore"), storesList);
+}
+
+function renderAccountsList(employees, storesList) {
+  const el = document.getElementById("employeeUsersList");
+  const emptyHint = document.getElementById("noEmployeesHint");
+  el.innerHTML = "";
+  emptyHint.style.display = employees.length === 0 ? "block" : "none";
+  employees.forEach(u => {
+    const store = storesList.find(s => s.id === u.storeId);
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `
+      <div class="name">${u.displayName} <small>${u.username} · ${store ? store.name : "门店已删除"}</small></div>
+      <button class="btn-ghost" data-action="reset">重置密码</button>
+      <button class="btn-ghost" data-action="delete">删除</button>
+    `;
+    row.querySelector('[data-action="reset"]').addEventListener("click", async () => {
+      const newPassword = prompt(`给「${u.displayName}」设置新密码:`);
+      if (!newPassword) return;
+      try {
+        await apiPost("resetPassword", { userId: u.id, newPassword });
+        alert("密码已重置。");
+      } catch (err) {
+        alert("重置失败: " + err.message);
+      }
+    });
+    row.querySelector('[data-action="delete"]').addEventListener("click", async () => {
+      if (!confirm(`删除员工账号「${u.displayName}」?`)) return;
+      await apiPost("deleteUser", { userId: u.id });
+      loadAccounts();
+    });
+    el.appendChild(row);
+  });
+}
+
+document.getElementById("addEmployeeBtn").addEventListener("click", async () => {
+  const displayName = document.getElementById("newEmpDisplayName").value.trim();
+  const username = document.getElementById("newEmpUsername").value.trim();
+  const password = document.getElementById("newEmpPassword").value;
+  const storeId = document.getElementById("newEmpStore").value;
+  const statusEl = document.getElementById("addEmployeeStatus");
+  if (!username || !password) { statusEl.className = "status-line error"; statusEl.textContent = "请输入用户名和密码"; return; }
+  try {
+    await apiPost("createEmployee", { username, password, displayName, storeId });
+    document.getElementById("newEmpDisplayName").value = "";
+    document.getElementById("newEmpUsername").value = "";
+    document.getElementById("newEmpPassword").value = "";
+    statusEl.className = "status-line"; statusEl.textContent = "";
+    await loadAccounts();
+  } catch (err) {
+    statusEl.className = "status-line error"; statusEl.textContent = "创建失败: " + err.message;
+  }
+});
+
+// ---------- 事件绑定 ----------
+document.getElementById("calcBtn").addEventListener("click", computeToday);
+document.getElementById("saveBtn").addEventListener("click", saveToday);
+document.getElementById("saveDirectBtn").addEventListener("click", saveDirectly);
+document.getElementById("refreshHistoryBtn").addEventListener("click", loadHistory);
+document.getElementById("addItemBtn").addEventListener("click", addItem);
+document.getElementById("toggleItemsBtn").addEventListener("click", () => {
+  const el = document.getElementById("itemsManage");
+  el.style.display = el.style.display === "none" ? "block" : "none";
+});
+
+// ---------- 启动:注册 service worker,尝试恢复上次登录,否则进登录页 ----------
+(async function boot() {
+  populateCurrencySelect(document.getElementById("newItemCurrency"));
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  }
+  const saved = loadSavedSession();
+  if (saved && saved.token && saved.user) {
+    authToken = saved.token;
+    try {
+      await afterLogin(saved.user);
+      return;
+    } catch (err) {
+      clearSession();
+    }
+  }
+  showView("login");
+  await initLoginView();
+})();
+</script>
+
+</body>
+</html>
