@@ -41,7 +41,7 @@ const CATEGORIES_HEADERS = ["id", "store_id", "name", "created_at", "settlement_
 const USERS_HEADERS = ["id", "username", "password_hash", "salt", "role", "display_name", "store_id"];
 const SESSIONS_HEADERS = ["token", "user_id", "created_at", "expires_at"];
 const FIELDS_HEADERS = ["id", "name", "type", "role", "order"];
-const ITEMS_HEADERS = ["id", "name", "unit", "price", "currency"];
+const ITEMS_HEADERS = ["id", "name", "unit", "price", "currency", "locked"];
 const LOG_HEADERS = ["date", "item_id", "item_name", "values_json", "usage", "cost", "edited_at"];
 
 const DEFAULT_CURRENCY = "CNY";
@@ -487,28 +487,57 @@ function listItems(categoryId) {
   const out = [];
   for (let i = 1; i < rows.length; i++) {
     if (!rows[i][0]) continue;
-    out.push({ id: rows[i][0], name: rows[i][1], unit: rows[i][2], price: Number(rows[i][3]), currency: rows[i][4] || DEFAULT_CURRENCY });
+    out.push({
+      id: rows[i][0], name: rows[i][1], unit: rows[i][2], price: Number(rows[i][3]),
+      currency: rows[i][4] || DEFAULT_CURRENCY, locked: rows[i][5] === true,
+    });
   }
   return out;
+}
+
+function getItemRow(categoryId, itemId) {
+  const sheet = getOrCreateSheet(itemsSheetName(categoryId), ITEMS_HEADERS);
+  const rows = sheet.getDataRange().getValues();
+  for (let i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]) === String(itemId)) return { rowIndex: i + 1, values: rows[i] };
+  }
+  return null;
 }
 
 function addItem(categoryId, name, unit, price, currency) {
   const id = "item_" + new Date().getTime();
   const sheet = getOrCreateSheet(itemsSheetName(categoryId), ITEMS_HEADERS);
-  sheet.appendRow([id, name, unit || "个", Number(price) || 0, currency || DEFAULT_CURRENCY]);
-  return { id: id, name: name, unit: unit, price: price, currency: currency || DEFAULT_CURRENCY };
+  sheet.appendRow([id, name, unit || "个", Number(price) || 0, currency || DEFAULT_CURRENCY, false]);
+  return { id: id, name: name, unit: unit, price: price, currency: currency || DEFAULT_CURRENCY, locked: false };
 }
 
 function updateItem(categoryId, itemId, name, unit, price, currency) {
+  const row = getItemRow(categoryId, itemId);
+  if (!row) throw new Error("找不到这个物品。");
+  if (row.values[5] === true) throw new Error("这个物品被锁定了,请先解锁。");
   const sheet = getOrCreateSheet(itemsSheetName(categoryId), ITEMS_HEADERS);
-  const rows = sheet.getDataRange().getValues();
-  for (let i = 1; i < rows.length; i++) {
-    if (String(rows[i][0]) === String(itemId)) {
-      sheet.getRange(i + 1, 2, 1, 4).setValues([[name, unit || "个", Number(price) || 0, currency || DEFAULT_CURRENCY]]);
-      return;
-    }
+  sheet.getRange(row.rowIndex, 2, 1, 4).setValues([[name, unit || "个", Number(price) || 0, currency || DEFAULT_CURRENCY]]);
+}
+
+function deleteItemById(categoryId, itemId) {
+  const row = getItemRow(categoryId, itemId);
+  if (!row) return;
+  if (row.values[5] === true) throw new Error("这个物品被锁定了,请先解锁。");
+  const sheet = getOrCreateSheet(itemsSheetName(categoryId), ITEMS_HEADERS);
+  sheet.deleteRow(row.rowIndex);
+}
+
+function setItemLocked(categoryId, itemId, locked) {
+  const row = getItemRow(categoryId, itemId);
+  if (!row) throw new Error("找不到这个物品。");
+  const sheet = getOrCreateSheet(itemsSheetName(categoryId), ITEMS_HEADERS);
+  sheet.getRange(row.rowIndex, 6).setValue(locked);
+}
+
+function verifyCurrentPassword(session, password) {
+  if (!session || !password || hashPassword(password, session.salt) !== session.password_hash) {
+    throw new Error("密码不对。");
   }
-  throw new Error("找不到这个物品。");
 }
 
 function getItemsWithLatestStockCheck(categoryId) {
@@ -691,6 +720,14 @@ function doPost(e) {
 
     if (action === "addItem") { requireAdmin(session); return jsonResponse({ item: addItem(payload.categoryId, payload.name, payload.unit, payload.price, payload.currency) }); }
     if (action === "updateItem") { requireAdmin(session); updateItem(payload.categoryId, payload.itemId, payload.name, payload.unit, payload.price, payload.currency); return jsonResponse({ status: "ok" }); }
+    if (action === "deleteItem") { requireAdmin(session); deleteItemById(payload.categoryId, payload.itemId); return jsonResponse({ status: "ok" }); }
+    if (action === "lockItem") { requireAdmin(session); setItemLocked(payload.categoryId, payload.itemId, true); return jsonResponse({ status: "ok" }); }
+    if (action === "unlockItem") {
+      requireAdmin(session);
+      verifyCurrentPassword(session, payload.password);
+      setItemLocked(payload.categoryId, payload.itemId, false);
+      return jsonResponse({ status: "ok" });
+    }
 
     if (action === "addField") { requireAdmin(session); return jsonResponse({ field: addField(payload.categoryId, payload.name, payload.fieldType, payload.role) }); }
     if (action === "deleteField") { requireAdmin(session); deleteField(payload.categoryId, payload.fieldId); return jsonResponse({ status: "ok" }); }

@@ -1548,13 +1548,55 @@ function renderManageList() {
   items.forEach(it => {
     const div = document.createElement("div");
     div.className = "row";
-    div.innerHTML = `
-      <div class="name">${it.name} <small>${it.unit} · ${currencySymbol(it.currency)}${Number(it.price).toFixed(2)}</small></div>
-      <button class="btn-ghost" data-action="edit">编辑</button>
-    `;
-    div.querySelector('[data-action="edit"]').addEventListener("click", () => toggleItemEdit(it, div));
+    if (it.locked) {
+      div.innerHTML = `
+        <div class="name">🔒 ${it.name} <small>${it.unit} · ${currencySymbol(it.currency)}${Number(it.price).toFixed(2)}</small></div>
+        <button class="btn-ghost" data-action="unlock">解锁</button>
+      `;
+      div.querySelector('[data-action="unlock"]').addEventListener("click", () => unlockItemHandler(it));
+    } else {
+      div.innerHTML = `
+        <div class="name">${it.name} <small>${it.unit} · ${currencySymbol(it.currency)}${Number(it.price).toFixed(2)}</small></div>
+        <button class="btn-ghost" data-action="lock">锁定</button>
+        <button class="btn-ghost" data-action="edit">编辑</button>
+        <button class="btn-ghost" data-action="delete">删除</button>
+      `;
+      div.querySelector('[data-action="lock"]').addEventListener("click", () => lockItemHandler(it));
+      div.querySelector('[data-action="edit"]').addEventListener("click", () => toggleItemEdit(it, div));
+      div.querySelector('[data-action="delete"]').addEventListener("click", () => deleteItemHandler(it));
+    }
     el.appendChild(div);
   });
+}
+
+async function lockItemHandler(item) {
+  try {
+    await apiPost("lockItem", { categoryId: currentCategory.id, itemId: item.id });
+    await loadItemsAndStock();
+  } catch (err) {
+    alert("锁定失败: " + err.message);
+  }
+}
+
+async function unlockItemHandler(item) {
+  const password = prompt(`解锁「${item.name}」需要输入管理员密码:`);
+  if (!password) return;
+  try {
+    await apiPost("unlockItem", { categoryId: currentCategory.id, itemId: item.id, password });
+    await loadItemsAndStock();
+  } catch (err) {
+    alert("解锁失败: " + err.message);
+  }
+}
+
+async function deleteItemHandler(item) {
+  if (!confirm(`删除物品「${item.name}」?历史记录里这个物品的名字还会保留,但不能再录入它的数据了。`)) return;
+  try {
+    await apiPost("deleteItem", { categoryId: currentCategory.id, itemId: item.id });
+    await loadItemsAndStock();
+  } catch (err) {
+    alert("删除失败: " + err.message);
+  }
 }
 
 function toggleItemEdit(item, rowDiv) {
