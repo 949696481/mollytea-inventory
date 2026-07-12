@@ -687,9 +687,27 @@ function getEntryHistory(categoryId, itemId, date) {
 
 function deleteLogDay(categoryId, date) {
   const sheet = getOrCreateSheet(logSheetName(categoryId), LOG_HEADERS);
+  const historySheet = getOrCreateSheet(historySheetName(categoryId), HISTORY_HEADERS);
   const rows = sheet.getDataRange().getValues();
   for (let i = rows.length - 1; i >= 1; i--) {
-    if (rows[i][1] && isSameDate(rows[i][0], date)) sheet.deleteRow(i + 1);
+    if (rows[i][1] && isSameDate(rows[i][0], date)) {
+      historySheet.appendRow(rows[i]); // 删除前存一份快照,配合"历史版本"面板,删了也能找回
+      sheet.deleteRow(i + 1);
+    }
+  }
+}
+
+// 只删某一天里"某个人"录入/最后编辑的那部分记录,别人当天录的不动——
+// 用 edited_by 字段区分,不是按"谁创建",是按"最后一次是谁存的"。
+function deleteLogDayByEditor(categoryId, date, editedBy) {
+  const sheet = getOrCreateSheet(logSheetName(categoryId), LOG_HEADERS);
+  const historySheet = getOrCreateSheet(historySheetName(categoryId), HISTORY_HEADERS);
+  const rows = sheet.getDataRange().getValues();
+  for (let i = rows.length - 1; i >= 1; i--) {
+    if (rows[i][1] && isSameDate(rows[i][0], date) && String(rows[i][7] || "") === String(editedBy || "")) {
+      historySheet.appendRow(rows[i]);
+      sheet.deleteRow(i + 1);
+    }
   }
 }
 
@@ -780,6 +798,12 @@ function doPost(e) {
     if (action === "deleteLogDay") {
       requireAdmin(session);
       deleteLogDay(payload.categoryId, payload.date);
+      return jsonResponse({ status: "ok" });
+    }
+
+    if (action === "deleteLogDayByEditor") {
+      requireAdmin(session);
+      deleteLogDayByEditor(payload.categoryId, payload.date, payload.editedBy);
       return jsonResponse({ status: "ok" });
     }
 

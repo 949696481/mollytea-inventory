@@ -1451,7 +1451,7 @@ document.getElementById("calNextBtn").addEventListener("click", () => {
 
 document.getElementById("deleteDayBtn").addEventListener("click", async () => {
   if (!currentDayDetailDate) return;
-  if (!confirm(`删除 ${formatDateLabel(currentDayDetailDate)} 这一天的所有记录?此操作无法恢复。`)) return;
+  if (!confirm(`删除 ${formatDateLabel(currentDayDetailDate)} 这一天的所有记录?`)) return;
   try {
     await apiPost("deleteLogDay", { categoryId: currentCategory.id, date: currentDayDetailDate });
     showView("detail");
@@ -1460,6 +1460,21 @@ document.getElementById("deleteDayBtn").addEventListener("click", async () => {
     alert("删除失败: " + err.message);
   }
 });
+
+// 只删这一天里"某个人"那部分记录,其他人当天录的不受影响
+async function deleteDayByEditor(editedBy, count) {
+  if (!currentDayDetailDate) return;
+  const label = editedBy || "未知";
+  if (!confirm(`删除 ${formatDateLabel(currentDayDetailDate)} 由「${label}」录入/编辑的 ${count} 条记录?其他人当天的记录不受影响。`)) return;
+  try {
+    await apiPost("deleteLogDayByEditor", { categoryId: currentCategory.id, date: currentDayDetailDate, editedBy });
+    await loadHistory();
+    openDayDetail(currentDayDetailDate, historyRowsByDate[currentDayDetailDate] || []);
+    await loadItemsAndStock();
+  } catch (err) {
+    alert("删除失败: " + err.message);
+  }
+}
 
 // 点进某一天:不是照抄"今天的记录"的原始字段,而是一份消耗总结——
 // 每个物品的消耗量+消耗金额,最后一行是当天总消耗。
@@ -1475,11 +1490,13 @@ function openDayDetail(date, dayRows) {
     listEl.innerHTML = `<div class="empty">这天没有记录</div>`;
     return;
   }
-  // 按记录人分组:同一天如果有多个人录入/编辑过,分开标注是谁的,而不是混在一起猜
+  // 按记录人分组:同一天如果有多个人录入/编辑过,分开标注是谁的,而不是混在一起猜。
+  // 分组用的 key 用原始值(没有就是空字符串),跟后端删除时按 edited_by 匹配的逻辑
+  // 保持一致;"未知"只是给没有记录人的旧数据一个展示用的名字,不能拿去发请求。
   const groups = [];
   const groupByEditor = {};
   dayRows.forEach(r => {
-    const key = r.editedBy || "未知";
+    const key = r.editedBy || "";
     if (!groupByEditor[key]) {
       groupByEditor[key] = { editor: key, rows: [] };
       groups.push(groupByEditor[key]);
@@ -1492,8 +1509,19 @@ function openDayDetail(date, dayRows) {
   groups.forEach(group => {
     if (showEditorHeaders) {
       const header = document.createElement("div");
-      header.style.cssText = "font-weight:700;margin:12px 0 4px;color:var(--ink);";
-      header.textContent = group.editor + "：";
+      header.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin:12px 0 4px;";
+      const label = document.createElement("span");
+      label.style.cssText = "font-weight:700;color:var(--ink);";
+      label.textContent = (group.editor || "未知") + "：";
+      header.appendChild(label);
+      if (isAdmin()) {
+        const delBtn = document.createElement("button");
+        delBtn.className = "btn-ghost";
+        delBtn.style.cssText = "font-size:12px;padding:2px 8px;";
+        delBtn.textContent = "删除这部分";
+        delBtn.addEventListener("click", () => deleteDayByEditor(group.editor, group.rows.length));
+        header.appendChild(delBtn);
+      }
       listEl.appendChild(header);
     }
     group.rows.forEach(r => {
