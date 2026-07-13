@@ -769,15 +769,40 @@ function getEntryHistory(categoryId, itemId, date) {
   return out;
 }
 
+// 删掉一个物品在某个分类里"当前"的日志之后,total_stock 要跟着退回"删除后
+// 还剩下的最新一条真实盘点"——不然总库存会停在一个已经被删掉的日子上,跟
+// "全部记录"里实际看到的历史对不上。一条记录都不剩了就清空(null),回到
+// "暂无记录"的状态,而不是继续显示已经不存在的那次盘点。
+function recomputeTotalStockForItem(categoryId, itemId, stockFieldId) {
+  const logSheet = getOrCreateSheet(logSheetName(categoryId), LOG_HEADERS);
+  const rows = logSheet.getDataRange().getValues();
+  let bestDateStr = null, bestVal = null;
+  for (let i = 1; i < rows.length; i++) {
+    if (String(rows[i][1]) !== String(itemId)) continue;
+    const values = parseValues(rows[i][3]);
+    const v = values[stockFieldId];
+    if (v === undefined || v === null || v === "") continue;
+    const dStr = formatDate(rows[i][0]);
+    if (bestDateStr === null || dStr > bestDateStr) { bestDateStr = dStr; bestVal = Number(v); }
+  }
+  setTotalStock(categoryId, itemId, bestVal === null ? "" : bestVal);
+}
+
 function deleteLogDay(categoryId, date) {
   const sheet = getOrCreateSheet(logSheetName(categoryId), LOG_HEADERS);
   const historySheet = getOrCreateSheet(historySheetName(categoryId), HISTORY_HEADERS);
   const rows = sheet.getDataRange().getValues();
+  const affectedItemIds = [];
   for (let i = rows.length - 1; i >= 1; i--) {
     if (rows[i][1] && isSameDate(rows[i][0], date)) {
       historySheet.appendRow(rows[i]); // 删除前存一份快照,配合"历史版本"面板,删了也能找回
+      affectedItemIds.push(rows[i][1]);
       sheet.deleteRow(i + 1);
     }
+  }
+  const stockFieldId = stockCheckFieldId(categoryId);
+  if (stockFieldId) {
+    affectedItemIds.forEach(function (id) { recomputeTotalStockForItem(categoryId, id, stockFieldId); });
   }
 }
 
@@ -787,11 +812,17 @@ function deleteLogDayByEditor(categoryId, date, editedBy) {
   const sheet = getOrCreateSheet(logSheetName(categoryId), LOG_HEADERS);
   const historySheet = getOrCreateSheet(historySheetName(categoryId), HISTORY_HEADERS);
   const rows = sheet.getDataRange().getValues();
+  const affectedItemIds = [];
   for (let i = rows.length - 1; i >= 1; i--) {
     if (rows[i][1] && isSameDate(rows[i][0], date) && String(rows[i][7] || "") === String(editedBy || "")) {
       historySheet.appendRow(rows[i]);
+      affectedItemIds.push(rows[i][1]);
       sheet.deleteRow(i + 1);
     }
+  }
+  const stockFieldId = stockCheckFieldId(categoryId);
+  if (stockFieldId) {
+    affectedItemIds.forEach(function (id) { recomputeTotalStockForItem(categoryId, id, stockFieldId); });
   }
 }
 
