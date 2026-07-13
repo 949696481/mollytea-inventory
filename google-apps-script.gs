@@ -41,7 +41,9 @@ const CATEGORIES_HEADERS = ["id", "store_id", "name", "created_at", "settlement_
 const USERS_HEADERS = ["id", "username", "password_hash", "salt", "role", "display_name", "store_id"];
 const SESSIONS_HEADERS = ["token", "user_id", "created_at", "expires_at"];
 const FIELDS_HEADERS = ["id", "name", "type", "role", "order"];
-const ITEMS_HEADERS = ["id", "name", "unit", "price", "currency", "locked"];
+// total_stock: 7th column, added 2026-07-12 — 老的物品行没有这一列,
+// getDataRange() 读出来就是 undefined,跟 locked 那次一样按"没设置"处理,不用迁移。
+const ITEMS_HEADERS = ["id", "name", "unit", "price", "currency", "locked", "total_stock"];
 const LOG_HEADERS = ["date", "item_id", "item_name", "values_json", "usage", "cost", "edited_at", "edited_by"];
 const HISTORY_HEADERS = ["date", "item_id", "item_name", "values_json", "usage", "cost", "edited_at", "edited_by"];
 
@@ -497,9 +499,11 @@ function listItems(categoryId) {
   const out = [];
   for (let i = 1; i < rows.length; i++) {
     if (!rows[i][0]) continue;
+    const rawTotal = rows[i][6];
     out.push({
       id: rows[i][0], name: rows[i][1], unit: rows[i][2], price: Number(rows[i][3]),
       currency: rows[i][4] || DEFAULT_CURRENCY, locked: rows[i][5] === true,
+      totalStock: (rawTotal === "" || rawTotal === undefined || rawTotal === null) ? null : Number(rawTotal),
     });
   }
   return out;
@@ -517,23 +521,28 @@ function getItemRow(categoryId, itemId) {
 function addItem(categoryId, name, unit, price, currency, startingStock) {
   const id = "item_" + new Date().getTime();
   const sheet = getOrCreateSheet(itemsSheetName(categoryId), ITEMS_HEADERS);
-  sheet.appendRow([id, name, unit || "个", Number(price) || 0, currency || DEFAULT_CURRENCY, false]);
-  // 起始库存:补一条"昨天"的库存盘点记录当基准,这样这个物品第一次真正的
-  // 盘点就有"上一次"可以减,能算出消耗——不然全新物品第一次盘点永远只能是
-  // 空的(见 [[project_inventory_app]] 里"总库存也没了"那次的排查)。故意用
-  // "昨天"而不是"今天":如果就在物品创建当天也录入了真实盘点,两条记录得是
-  // 不同的日期,findPreviousStockCheck 才能把这条起始记录当成"上一次"。
-  if (startingStock !== undefined && startingStock !== null && startingStock !== "") {
-    const stockFieldId = stockCheckFieldId(categoryId);
-    if (stockFieldId) {
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      const values = {};
-      values[stockFieldId] = Number(startingStock);
-      logEntries(categoryId, yesterday, [{ itemId: id, itemName: name, values: values }], "起始库存");
-    }
-  }
-  return { id: id, name: name, unit: unit, price: price, currency: currency || DEFAULT_CURRENCY, locked: false };
+  const hasStarting = startingStock !== undefined && startingStock !== null && startingStock !== "";
+  // 起始库存直接写进物品自己的 total_stock 字段当基准,不再造一条假的历史日期
+  // 记录——这样这个物品第一次真正盘点就有"上一次"可以减,能算出消耗,而且
+  // "全部记录"日历里不会平白多出一天,删这个物品的真实记录也不会连带把这个
+  // 数字弄没(以前那版靠伪造"昨天"的日志行当基准,两个问题都踩过)。
+  sheet.appendRow([id, name, unit || "个", Number(price) || 0, currency || DEFAULT_CURRENCY, false, hasStarting ? Number(startingStock) : ""]);
+  return {
+    id: id, name: name, unit: unit, price: price, currency: currency || DEFAULT_CURRENCY, locked: false,
+    totalStock: hasStarting ? Number(startingStock) : null,
+  };
+}
+
+// 直接改 total_stock 这个数字,不碰任何一天的日志行——不产生消耗记录,只是
+// 纠正"现在库存应该是多少"。只有管理员能调这个(前端隐藏+这里 requireAdmin
+// 双重把关,见 dispatch 里的 setTotalStock 分支);正常员工录入当天盘点走的
+// 是 logEntries,那条路径也会自动把新数值推进 total_stock,但那不算"直接改"。
+function setTotalStock(categoryId, itemId, value) {
+  const row = getItemRow(categoryId, itemId);
+  if (!row) throw new Error("找不到这个物品。");
+  const sheet = getOrCreateSheet(itemsSheetName(categoryId), ITEMS_HEADERS);
+  const v = (value === null || value === undefined || value === "") ? "" : Number(value);
+  sheet.getRange(row.rowIndex, 7).setValue(v);
 }
 
 function updateItem(categoryId, itemId, name, unit, price, currency) {
@@ -565,24 +574,16 @@ function verifyCurrentPassword(session, password) {
   }
 }
 
+// "目前总库存"现在直接读物品自己的 total_stock 字段,不再扫日志表找"最新一条
+// 盘点记录"——这样删掉某一天的日志不会连带把这个数字弄没(total_stock 是独立
+// 存的,只会被起始库存/正常录入/管理员直接改这三种操作更新,删日志不影响它)。
 function getItemsWithLatestStockCheck(categoryId) {
   const items = listItems(categoryId);
   const stockFieldId = stockCheckFieldId(categoryId);
   const latest = {};
-  if (stockFieldId) {
-    const logSheet = getOrCreateSheet(logSheetName(categoryId), LOG_HEADERS);
-    const rows = logSheet.getDataRange().getValues();
-    const dataRows = [];
-    for (let i = 1; i < rows.length; i++) {
-      if (rows[i][1]) dataRows.push(rows[i]);
-    }
-    dataRows.sort(function (a, b) { return new Date(a[0]).getTime() - new Date(b[0]).getTime(); });
-    dataRows.forEach(function (row) {
-      const values = parseValues(row[3]);
-      const v = values[stockFieldId];
-      if (v !== undefined && v !== null && v !== "") latest[row[1]] = Number(v);
-    });
-  }
+  items.forEach(function (it) {
+    if (it.totalStock !== null && it.totalStock !== undefined) latest[it.id] = it.totalStock;
+  });
   return { items: items, latestStockCheck: latest, stockCheckFieldId: stockFieldId };
 }
 
@@ -634,13 +635,30 @@ function logEntries(categoryId, date, entries, editedBy) {
       const stockValRaw = merged[stockFieldId];
       const stockVal = (stockValRaw === undefined || stockValRaw === null || stockValRaw === "") ? null : Number(stockValRaw);
       if (stockVal !== null && !isNaN(stockVal)) {
-        const prevStock = findPreviousStockCheck(rows, itemId, date, stockFieldId);
+        // 基准优先按日期链找"上一次真正的盘点记录"——补录/编辑更早的历史日期
+        // 靠这个保证消耗数字用的是"那天当时"的上下文,不会被今天的总库存带偏。
+        // 真的一条历史记录都没有(全新物品的第一次盘点),才退回去用物品自己的
+        // total_stock 字段当基准——这就是起始库存生效的地方。
+        let prevStock = findPreviousStockCheck(rows, itemId, date, stockFieldId);
+        if (prevStock === null) {
+          const itemRow = getItemRow(categoryId, itemId);
+          const rawTotal = itemRow ? itemRow.values[6] : "";
+          if (rawTotal !== "" && rawTotal !== undefined && rawTotal !== null) prevStock = Number(rawTotal);
+        }
         if (prevStock !== null) {
           const incomingRaw = incFieldId ? merged[incFieldId] : null;
           const incomingVal = (incomingRaw === undefined || incomingRaw === null || incomingRaw === "") ? 0 : (Number(incomingRaw) || 0);
           usage = prevStock + incomingVal - stockVal;
           cost = usage * (Number(entry.price) || 0);
         }
+        // 只有这条记录是这个物品目前"最新"的盘点(日期不早于其它所有记录),才
+        // 把新数值推进 total_stock——补录/编辑更早的历史日期不该覆盖"现在"的
+        // 总库存,那个数字永远该反映"最近一次真实盘点",不是"最近一次被编辑的"。
+        const targetDateStr = formatDate(date);
+        const isLatestForItem = !rows.some(function (r, idx) {
+          return idx > 0 && idx !== existingRowIndex && String(r[1]) === String(itemId) && formatDate(r[0]) > targetDateStr;
+        });
+        if (isLatestForItem) setTotalStock(categoryId, itemId, stockVal);
       }
     }
 
@@ -791,6 +809,7 @@ function doPost(e) {
 
     if (action === "addItem") { requireAdmin(session); return jsonResponse({ item: addItem(payload.categoryId, payload.name, payload.unit, payload.price, payload.currency, payload.startingStock) }); }
     if (action === "updateItem") { requireAdmin(session); updateItem(payload.categoryId, payload.itemId, payload.name, payload.unit, payload.price, payload.currency); return jsonResponse({ status: "ok" }); }
+    if (action === "setTotalStock") { requireAdmin(session); setTotalStock(payload.categoryId, payload.itemId, payload.value); return jsonResponse({ status: "ok" }); }
     if (action === "deleteItem") { requireAdmin(session); deleteItemById(payload.categoryId, payload.itemId); return jsonResponse({ status: "ok" }); }
     if (action === "lockItem") { requireAdmin(session); setItemLocked(payload.categoryId, payload.itemId, true); return jsonResponse({ status: "ok" }); }
     if (action === "unlockItem") {

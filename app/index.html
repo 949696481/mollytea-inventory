@@ -528,21 +528,23 @@
     </div>
 
     <div class="card">
-      <h2><span>消耗汇总</span></h2>
+      <h2><span>消耗汇总</span> <button class="btn-ghost" id="toggleSummaryCalBtn">展开日历</button></h2>
       <div class="quick-range-row" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
         <button class="btn-ghost" id="summaryQuickTodayBtn">今日</button>
         <button class="btn-ghost" id="summaryQuickLastWeekBtn">上周</button>
         <button class="btn-ghost active" id="summaryQuickThisWeekBtn">本周</button>
         <button class="btn-ghost" id="summaryQuickThisMonthBtn">本月</button>
       </div>
-      <div class="calendar-nav">
-        <button id="summaryCalPrevBtn">‹</button>
-        <span id="summaryCalMonthLabel"></span>
-        <button id="summaryCalNextBtn">›</button>
+      <div id="summaryCalendarBody" style="display:none;">
+        <div class="calendar-nav">
+          <button id="summaryCalPrevBtn">‹</button>
+          <span id="summaryCalMonthLabel"></span>
+          <button id="summaryCalNextBtn">›</button>
+        </div>
+        <div class="calendar-grid" id="summaryCalendarGrid"></div>
+        <div class="hint" style="text-align:center;margin:8px 0;">点日期选起点,再点一次选终点;点同一天两次=只看这一天</div>
       </div>
-      <div class="calendar-grid" id="summaryCalendarGrid"></div>
-      <div class="hint" style="text-align:center;margin:8px 0;">点日期选起点,再点一次选终点;点同一天两次=只看这一天</div>
-      <div style="font-weight:700;text-align:center;margin-bottom:6px;" id="summaryRangeLabel"></div>
+      <div style="font-weight:700;text-align:center;margin:6px 0;" id="summaryRangeLabel"></div>
       <div id="summaryList"></div>
     </div>
 
@@ -627,6 +629,7 @@ let lastComputed = null;
 let manageMode = false;
 let manageFieldsMode = false;
 let editingEntry = null;      // {date, itemId, itemName} 正在编辑的历史记录
+let editingIsQuickStockOverride = false; // true = 从"目前总库存"磁贴点进来的,保存要走 setTotalStock 而不是 saveLogEntries
 let settlementCurrency = "CNY"; // 这个分类当前选的结算货币
 let exchangeRates = null;      // {date, rates:{USD:0.14,...}} 1 结算货币 = rates[X] 个 X
 let ratesError = "";           // 汇率拉取失败时的提示
@@ -1362,38 +1365,49 @@ function renderStockSummary() {
   card.style.display = "block";
   el.className = "stock-grid";
   el.innerHTML = "";
+  const admin = isAdmin();
   items.forEach(it => {
     const val = latestStockCheck[it.id];
     const tile = document.createElement("div");
     tile.className = "stock-tile";
+    const hint = admin ? (val !== undefined ? "点击修改" : "暂无记录·点击设置") : (val !== undefined ? "" : "暂无记录");
     tile.innerHTML = `
       <div class="stock-tile-name">${it.name}</div>
       <div class="stock-tile-value">${val !== undefined ? val : "--"}<span class="unit">${it.unit}</span></div>
-      <div class="stock-tile-hint">${val !== undefined ? "点击修改" : "暂无记录·点击设置"}</div>
+      <div class="stock-tile-hint">${hint}</div>
     `;
-    tile.addEventListener("click", () => editStockFor(it));
+    // 总库存只有管理员能直接改——员工正常录入当天盘点(走"今天的记录"表格)
+    // 照样会自动把新数值推进总库存,只是不能像这样绕开正常流程直接改这个数字。
+    if (admin) tile.addEventListener("click", () => editStockFor(it));
     el.appendChild(tile);
   });
 }
 
-// 点"目前总库存"里的某个物品,直接快速设置/修改它今天的库存盘点数值——
-// 复用编辑历史记录的同一套面板和保存逻辑,只是只显示"库存盘点"这一个字段。
+// 点"目前总库存"里的某个物品(仅管理员),直接改 total_stock 这个数字——
+// 复用编辑记录的同一套面板,但保存时走 setTotalStock,不是 saveLogEntries:
+// 这是"纠正现在库存应该是多少",不是"补一条新的消耗记录",所以不产生日志行、
+// 不算消耗。跟"编辑历史记录"(openEditEntry)共用同一个保存按钮,靠
+// editingIsQuickStockOverride 这个标记区分两条不同的保存路径。
 function editStockFor(item) {
-  document.getElementById("editEntryHint").textContent = todayStr() + "(今天)";
+  document.getElementById("editEntryHint").textContent = "直接修改总库存(不会生成消耗记录)";
   const container = document.getElementById("editEntryFields");
   container.innerHTML = `<div class="entry-item-name">${item.name}</div><div class="entry-fields" id="editFieldsGrid"></div>`;
   const grid = document.getElementById("editFieldsGrid");
   const currentVal = latestStockCheck[item.id];
   const stockField = fields.find(f => f.id === stockFieldId);
   const label = document.createElement("label");
-  label.innerHTML = `${stockField ? stockField.name : "目前库存"}<input type="number" step="1" data-field="${stockFieldId}" value="${currentVal !== undefined ? currentVal : ""}">`;
+  label.innerHTML = `${stockField ? stockField.name : "总库存"}<input type="number" step="1" data-field="${stockFieldId}" value="${currentVal !== undefined ? currentVal : ""}">`;
   grid.appendChild(label);
   editingEntry = { date: todayStr(), itemId: item.id, itemName: item.name };
+  editingIsQuickStockOverride = true;
   document.getElementById("editStatus").className = "status-line";
   document.getElementById("editStatus").textContent = "";
   document.getElementById("editEntryCard").style.display = "block";
   document.getElementById("editEntryCard").scrollIntoView({ behavior: "smooth", block: "start" });
   resetHistoryPanel();
+  // 直接改总库存不产生日志行,跟"历史版本"(那是日志记录的编辑历史)没关系,
+  // 显示这个按钮只会让人以为能查到什么,藏掉更清楚。
+  document.getElementById("toggleHistoryVersionsBtn").style.display = "none";
 }
 
 function formatDateLabel(dateStr) {
@@ -1490,6 +1504,17 @@ document.getElementById("summaryQuickTodayBtn").addEventListener("click", () => 
 document.getElementById("summaryQuickLastWeekBtn").addEventListener("click", () => applySummaryQuick("LastWeek"));
 document.getElementById("summaryQuickThisWeekBtn").addEventListener("click", () => applySummaryQuick("ThisWeek"));
 document.getElementById("summaryQuickThisMonthBtn").addEventListener("click", () => applySummaryQuick("ThisMonth"));
+
+// 日历默认收起,只留快捷按钮 + 汇总数字——只有想选快捷按钮之外的具体日期区间
+// 才需要展开日历;收起状态下日历照样在后台正常 render(只是 display:none),
+// 展开的瞬间不会是空的。
+document.getElementById("toggleSummaryCalBtn").addEventListener("click", () => {
+  const body = document.getElementById("summaryCalendarBody");
+  const btn = document.getElementById("toggleSummaryCalBtn");
+  const show = body.style.display === "none";
+  body.style.display = show ? "block" : "none";
+  btn.textContent = show ? "收起日历" : "展开日历";
+});
 
 // 点日历里的某一天:第一次点定起点(同时先当成单日区间显示),第二次点定
 // 终点——点的日期比起点早就自动交换,保证 start<=end;再点第三次是新一轮
@@ -1806,6 +1831,7 @@ function openEditEntry(entry) {
     grid.appendChild(label);
   });
   editingEntry = { date: entry.date, itemId: entry.itemId, itemName: entry.itemName };
+  editingIsQuickStockOverride = false;
   document.getElementById("editStatus").className = "status-line";
   document.getElementById("editStatus").textContent = "";
   document.getElementById("editEntryCard").style.display = "block";
@@ -1876,21 +1902,31 @@ document.getElementById("saveEditBtn").addEventListener("click", async () => {
   if (!editingEntry) return;
   const statusEl = document.getElementById("editStatus");
   statusEl.className = "status-line"; statusEl.textContent = "保存中…";
-  const values = {};
-  document.querySelectorAll("#editFieldsGrid input").forEach(inp => {
-    values[inp.dataset.field] = inp.value;
-  });
-  const item = items.find(it => it.id === editingEntry.itemId);
   try {
-    await apiPost("saveLogEntries", {
-      categoryId: currentCategory.id, date: editingEntry.date,
-      entries: [{ itemId: editingEntry.itemId, itemName: editingEntry.itemName, values, price: item ? item.price : 0 }]
-    });
+    if (editingIsQuickStockOverride) {
+      const inp = document.querySelector("#editFieldsGrid input");
+      const raw = inp ? inp.value : "";
+      await apiPost("setTotalStock", {
+        categoryId: currentCategory.id, itemId: editingEntry.itemId,
+        value: raw === "" ? null : parseFloat(raw),
+      });
+    } else {
+      const values = {};
+      document.querySelectorAll("#editFieldsGrid input").forEach(inp => {
+        values[inp.dataset.field] = inp.value;
+      });
+      const item = items.find(it => it.id === editingEntry.itemId);
+      await apiPost("saveLogEntries", {
+        categoryId: currentCategory.id, date: editingEntry.date,
+        entries: [{ itemId: editingEntry.itemId, itemName: editingEntry.itemName, values, price: item ? item.price : 0 }]
+      });
+    }
     statusEl.className = "status-line ok"; statusEl.textContent = "已保存修改 ✓";
     document.getElementById("editEntryCard").style.display = "none";
+    const wasQuickOverride = editingIsQuickStockOverride;
     editingEntry = null;
     await loadItemsAndStock();
-    await loadHistory();
+    if (!wasQuickOverride) await loadHistory();
   } catch (err) {
     statusEl.className = "status-line error"; statusEl.textContent = "保存失败: " + err.message;
   }
