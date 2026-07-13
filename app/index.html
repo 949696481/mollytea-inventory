@@ -1280,6 +1280,21 @@ function computeToday() {
   });
 }
 
+// saveLogEntries 如果发现"这个物品今天已经有人录过了"会先返回 needsConfirm,
+// 不是直接覆盖——这里统一弹一个 confirm 列出是谁、什么时候录的,确认了再带上
+// confirmOverwrite 重新提交一次。取消就返回 null,调用方按"没保存"处理。
+async function saveLogEntriesWithConfirm(payload) {
+  const result = await apiPost("saveLogEntries", payload);
+  if (!result.needsConfirm) return result;
+  const lines = result.conflicts.map(c => {
+    const t = c.editedAt ? new Date(c.editedAt).toLocaleString("zh-CN", { hour12: false }) : "未知时间";
+    return `${c.itemName}(由 ${c.editedBy} 于 ${t} 记录)`;
+  });
+  const ok = confirm(`以下物品今天已经有记录了:\n${lines.join("\n")}\n\n继续保存会覆盖这些记录(旧版本仍可在"历史版本"里找回)。是否继续?`);
+  if (!ok) return null;
+  return apiPost("saveLogEntries", Object.assign({}, payload, { confirmOverwrite: true }));
+}
+
 async function saveToday() {
   const statusEl = document.getElementById("saveStatus");
   if (!lastComputed) return;
@@ -1290,7 +1305,8 @@ async function saveToday() {
       itemId: l.id, itemName: l.name, values: l.values,
       price: items.find(it => it.id === l.id).price
     }));
-    await apiPost("saveLogEntries", { categoryId: currentCategory.id, date: lastComputed.date, entries });
+    const result = await saveLogEntriesWithConfirm({ categoryId: currentCategory.id, date: lastComputed.date, entries });
+    if (!result) { statusEl.className = "status-line"; statusEl.textContent = "已取消"; return; }
     statusEl.className = "status-line ok";
     statusEl.textContent = "已保存 ✓";
     todayInputs = {};
@@ -1314,7 +1330,8 @@ async function saveDirectly() {
   }
   statusEl.className = "status-line"; statusEl.textContent = "保存中…";
   try {
-    await apiPost("saveLogEntries", { categoryId: currentCategory.id, date: todayStr(), entries });
+    const result = await saveLogEntriesWithConfirm({ categoryId: currentCategory.id, date: todayStr(), entries });
+    if (!result) { statusEl.className = "status-line"; statusEl.textContent = "已取消"; return; }
     statusEl.className = "status-line ok"; statusEl.textContent = "已保存 ✓";
     todayInputs = {};
     renderItemRows();
@@ -1736,6 +1753,49 @@ async function deleteDayByEditor(editedBy, count) {
   }
 }
 
+// 管理员专用:在"某天详情"里每条记录下面加一个"查看编辑历史"的小开关,
+// 点开才(懒加载,只查一次)去查这条记录被谁改过、什么时候、改成了什么——
+// 复用编辑面板里"历史版本"用的同一个后端接口,只是不用先点进编辑页再点一次。
+function appendInlineHistoryToggle(listEl, r) {
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "margin:-4px 0 10px;";
+  const btn = document.createElement("button");
+  btn.className = "btn-ghost";
+  btn.style.cssText = "font-size:11px;padding:2px 8px;";
+  btn.textContent = "查看编辑历史";
+  const list = document.createElement("div");
+  list.style.cssText = "display:none;margin-top:6px;";
+  let loaded = false;
+  btn.addEventListener("click", async () => {
+    if (list.style.display !== "none") { list.style.display = "none"; return; }
+    list.style.display = "block";
+    if (loaded) return;
+    loaded = true;
+    list.innerHTML = `<div class="hint">加载中…</div>`;
+    try {
+      const { history } = await apiGet("getEntryHistory", { categoryId: currentCategory.id, itemId: r.itemId, date: r.date });
+      if (!history.length) { list.innerHTML = `<div class="hint">这条记录没有被改过</div>`; return; }
+      list.innerHTML = "";
+      history.forEach(h => {
+        const timeLabel = h.editedAt ? new Date(h.editedAt).toLocaleString("zh-CN", { hour12: false }) : "";
+        const fieldSummary = fields.map(f => {
+          const v = h.values && h.values[f.id];
+          return (v !== undefined && v !== null && v !== "") ? `${f.name}:${v}` : null;
+        }).filter(Boolean).join(" · ");
+        const item = document.createElement("div");
+        item.style.cssText = "font-size:11px;color:var(--ink-dim);padding:2px 0;";
+        item.textContent = `${h.editedBy || "未知"} · ${timeLabel} · ${fieldSummary || "(空)"}`;
+        list.appendChild(item);
+      });
+    } catch (err) {
+      list.innerHTML = `<div class="status-line error">加载失败: ${err.message}</div>`;
+    }
+  });
+  wrap.appendChild(btn);
+  wrap.appendChild(list);
+  listEl.appendChild(wrap);
+}
+
 // 点进某一天:不是照抄"今天的记录"的原始字段,而是一份消耗总结——
 // 每个物品的消耗量+消耗金额,最后一行是当天总消耗。
 function openDayDetail(date, dayRows) {
@@ -1809,6 +1869,10 @@ function openDayDetail(date, dayRows) {
         editedDiv.textContent = metaLabel;
         listEl.appendChild(editedDiv);
       }
+      // 管理员能直接在这里看"这条记录被谁改过、什么时候",不用先点进编辑页
+      // 再点"历史版本"——跟保存时的覆盖提示是同一个目的,让"是不是有人顶掉了
+      // 别人的记录"这件事一眼就能查,不用靠记忆或者去问。
+      if (isAdmin()) appendInlineHistoryToggle(listEl, r);
     });
   });
   const totalRow = document.createElement("div");
@@ -1916,8 +1980,10 @@ document.getElementById("saveEditBtn").addEventListener("click", async () => {
         values[inp.dataset.field] = inp.value;
       });
       const item = items.find(it => it.id === editingEntry.itemId);
+      // 这里走的是"编辑记录",用户点进来的时候已经看到了当前这条记录本身,
+      // 不用再弹一次"已经有记录了"的确认——直接带 confirmOverwrite 跳过检查。
       await apiPost("saveLogEntries", {
-        categoryId: currentCategory.id, date: editingEntry.date,
+        categoryId: currentCategory.id, date: editingEntry.date, confirmOverwrite: true,
         entries: [{ itemId: editingEntry.itemId, itemName: editingEntry.itemName, values, price: item ? item.price : 0 }]
       });
     }

@@ -610,12 +610,32 @@ function findPreviousStockCheck(rows, itemId, date, stockFieldId) {
   return bestVal;
 }
 
-function logEntries(categoryId, date, entries, editedBy) {
+function logEntries(categoryId, date, entries, editedBy, confirmOverwrite) {
   const sheet = getOrCreateSheet(logSheetName(categoryId), LOG_HEADERS);
   const rows = sheet.getDataRange().getValues();
   const stockFieldId = stockCheckFieldId(categoryId);
   const incFieldId = incomingFieldId(categoryId);
   const nowIso = new Date().toISOString();
+
+  // 先整体检查一遍有没有"这个物品今天已经有人录过"——批量保存(今天的记录
+  // 表格一次存好几个物品)要么整批一起提示、要么整批一起存,不做部分保存,
+  // 不然没法跟前端解释"这几个存了那几个没存"。只有前端明确带上
+  // confirmOverwrite(用户已经看过提示、确认要覆盖)才跳过这一步直接写。
+  if (!confirmOverwrite) {
+    const conflicts = [];
+    entries.forEach(function (entry) {
+      for (let i = 1; i < rows.length; i++) {
+        if (String(rows[i][1]) === String(entry.itemId) && isSameDate(rows[i][0], date)) {
+          conflicts.push({
+            itemId: entry.itemId, itemName: entry.itemName || rows[i][2],
+            editedBy: rows[i][7] || "未知", editedAt: rows[i][6] || null,
+          });
+          break;
+        }
+      }
+    });
+    if (conflicts.length > 0) return { needsConfirm: true, conflicts: conflicts };
+  }
 
   entries.forEach(function (entry) {
     const itemId = entry.itemId;
@@ -674,6 +694,7 @@ function logEntries(categoryId, date, entries, editedBy) {
       rows.push(rowValues);
     }
   });
+  return { needsConfirm: false };
 }
 
 function getRecentLog(categoryId, days) {
@@ -825,7 +846,8 @@ function doPost(e) {
 
     if (action === "saveLogEntries") {
       requireStoreForCategory(session, payload.categoryId);
-      logEntries(payload.categoryId, payload.date, payload.entries, session.display_name || session.username);
+      const result = logEntries(payload.categoryId, payload.date, payload.entries, session.display_name || session.username, !!payload.confirmOverwrite);
+      if (result && result.needsConfirm) return jsonResponse({ needsConfirm: true, conflicts: result.conflicts });
       return jsonResponse({ status: "ok" });
     }
 
