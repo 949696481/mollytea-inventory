@@ -365,6 +365,8 @@
   .cal-day-has-data { background: rgba(62,131,104,0.10); }
   .cal-day-future { color: var(--ink-dim); opacity: 0.35; cursor: default; }
   .cal-day-future:hover { background: none; }
+  .cal-day-in-range { background: rgba(201,150,60,0.22); }
+  .cal-day-range-edge { background: var(--gold-dark); color: var(--paper); font-weight: 700; }
   .cal-dot {
     width: 5px; height: 5px;
     border-radius: 50%;
@@ -526,12 +528,21 @@
     </div>
 
     <div class="card">
-      <h2><span>消耗汇总</span> <span><button class="btn-ghost active" id="summaryModeWeekBtn">本周</button> <button class="btn-ghost" id="summaryModeMonthBtn">本月</button></span></h2>
-      <div class="calendar-nav">
-        <button id="summaryPrevBtn">‹</button>
-        <span id="summaryRangeLabel"></span>
-        <button id="summaryNextBtn">›</button>
+      <h2><span>消耗汇总</span></h2>
+      <div class="quick-range-row" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+        <button class="btn-ghost" id="summaryQuickTodayBtn">今日</button>
+        <button class="btn-ghost" id="summaryQuickLastWeekBtn">上周</button>
+        <button class="btn-ghost active" id="summaryQuickThisWeekBtn">本周</button>
+        <button class="btn-ghost" id="summaryQuickThisMonthBtn">本月</button>
       </div>
+      <div class="calendar-nav">
+        <button id="summaryCalPrevBtn">‹</button>
+        <span id="summaryCalMonthLabel"></span>
+        <button id="summaryCalNextBtn">›</button>
+      </div>
+      <div class="calendar-grid" id="summaryCalendarGrid"></div>
+      <div class="hint" style="text-align:center;margin:8px 0;">点日期选起点,再点一次选终点;点同一天两次=只看这一天</div>
+      <div style="font-weight:700;text-align:center;margin-bottom:6px;" id="summaryRangeLabel"></div>
       <div id="summaryList"></div>
     </div>
 
@@ -544,6 +555,10 @@
           <input class="unit" id="newItemUnit" placeholder="单位,如 L">
           <input class="price" id="newItemPrice" placeholder="单价" type="number" step="0.01">
           <select class="price" id="newItemCurrency"></select>
+        </div>
+        <div id="newItemStartingStockRow" style="display:none;margin-top:8px;">
+          <input id="newItemStartingStock" type="number" step="0.01" placeholder="起始库存(可不填)" style="width:100%;padding:10px 12px;border-radius:10px;border:1.5px solid var(--paper-dim);font-size:13px;">
+          <div class="hint" style="margin-top:4px;">填了这个,以后第一次真正盘点就能算出消耗;不填的话第一次盘点还是会显示"暂无消耗数据"</div>
         </div>
         <button class="btn-secondary" id="addItemBtn" style="margin-top:8px;">添加物品</button>
       </div>
@@ -945,7 +960,20 @@ async function selectCategory(cat) {
   document.getElementById("fieldsManage").style.display = "none";
   editingEntry = null;
   todayInputs = {};
-  summaryAnchorDate = new Date();
+  {
+    const { start, end } = computeQuickRange("ThisWeek");
+    summaryRangeStart = dateToStr(start);
+    summaryRangeEnd = dateToStr(end);
+    summaryPickingEnd = false;
+    summaryActiveQuick = "ThisWeek";
+    summaryCalViewDate = new Date();
+  }
+  updateQuickBtnActive();
+  // 切分类时把上一个分类残留的日历高亮/汇总清掉,不然在新数据拉回来之前
+  // 会闪一下"上一个分类选的区间",跟下面 calendarGrid 的"加载中"占位是同一个道理。
+  document.getElementById("summaryCalendarGrid").innerHTML = `<div class="empty" style="grid-column:1/-1;">加载中…</div>`;
+  document.getElementById("summaryRangeLabel").textContent = "";
+  document.getElementById("summaryList").innerHTML = "";
 
   const calendarGrid = document.getElementById("calendarGrid");
   calendarGrid.innerHTML = `<div class="empty" style="grid-column:1/-1;">加载中…</div>`;
@@ -1302,6 +1330,8 @@ function applyItemsAndStock(data) {
   items = data.items || [];
   latestStockCheck = data.latestStockCheck || {};
   stockFieldId = data.stockCheckFieldId || null;
+  // 没配置"库存盘点"字段的分类,起始库存填了也没地方存,直接不显示这个输入框。
+  document.getElementById("newItemStartingStockRow").style.display = stockFieldId ? "block" : "none";
   renderItemRows();
   renderManageList();
   renderStockSummary();
@@ -1377,8 +1407,15 @@ const ALL_HISTORY_DAYS = 36500; // 约100年,相当于"不限制天数,拿全部
 let historyRowsByDate = {}; // {dateStr: [rows]}
 let calendarViewDate = new Date(); // 日历当前显示的月份
 let currentDayDetailDate = null; // 当前在"某天详情"页看的是哪一天,删除按钮要用
-let summaryMode = "week"; // "消耗汇总"卡片:"week" | "month"
-let summaryAnchorDate = new Date(); // 落在目标周/月里的任意一天,靠它定位区间
+
+// "消耗汇总"是日历形式的区间选择(类似订酒店选日期):点一次定起点(同时临时
+// 当终点显示单日汇总),没点第二次前 summaryPickingEnd=true;再点一次定终点,
+// 点的日期比起点早就自动交换,保证 start<=end。
+let summaryRangeStart = null;   // "YYYY-MM-DD"
+let summaryRangeEnd = null;     // "YYYY-MM-DD"
+let summaryPickingEnd = false;
+let summaryCalViewDate = new Date(); // 消耗汇总日历当前显示的月份,跟"全部记录"日历各自独立
+let summaryActiveQuick = "ThisWeek"; // 当前高亮的快捷按钮;手动点日历选区间后设为 null
 
 async function fetchLog(categoryId, days) {
   return (await apiGet("getLog", { categoryId, days })).log;
@@ -1392,11 +1429,13 @@ function applyLog(rows) {
   });
   calendarViewDate = new Date();
   renderCalendar();
+  renderSummaryCalendar();
   renderSummary();
 }
 
-// ---------- 消耗汇总(本周/本月):直接拿"全部记录"已经拉回来的数据在前端汇总,
-// 不用再单独打一次后端请求——同一份 historyRowsByDate,按日期区间筛一遍就行。
+// ---------- 消耗汇总:日历区间选择(类似订酒店选日期),直接拿"全部记录"
+// 已经拉回来的数据在前端汇总,不用再单独打一次后端请求——同一份
+// historyRowsByDate,按日期区间筛一遍就行。
 function dateToStr(d) {
   return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
 }
@@ -1412,21 +1451,131 @@ function endOfWeek(d) {
   return new Date(s.getFullYear(), s.getMonth(), s.getDate() + 6);
 }
 
+// 快捷按钮的区间计算。"本周"/"本月"故意用 today 收尾而不是周日/月底——
+// 这样即使这周/这月还没登记完,汇总也是"到今天为止"的实际消耗,不会把
+// 未来几天(还没数据的日子)也框进选中区间里。"上周"是完整的一周,因为
+// 那一周已经完全过去了。
+function computeQuickRange(key) {
+  const t = new Date();
+  if (key === "Today") return { start: t, end: t };
+  if (key === "LastWeek") {
+    const thisWeekStart = startOfWeek(t);
+    const start = new Date(thisWeekStart.getFullYear(), thisWeekStart.getMonth(), thisWeekStart.getDate() - 7);
+    const end = new Date(thisWeekStart.getFullYear(), thisWeekStart.getMonth(), thisWeekStart.getDate() - 1);
+    return { start, end };
+  }
+  if (key === "ThisMonth") return { start: new Date(t.getFullYear(), t.getMonth(), 1), end: t };
+  return { start: startOfWeek(t), end: t }; // ThisWeek
+}
+
+function updateQuickBtnActive() {
+  ["Today", "LastWeek", "ThisWeek", "ThisMonth"].forEach(k => {
+    document.getElementById("summaryQuick" + k + "Btn").classList.toggle("active", summaryActiveQuick === k);
+  });
+}
+
+function applySummaryQuick(key) {
+  const { start, end } = computeQuickRange(key);
+  summaryRangeStart = dateToStr(start);
+  summaryRangeEnd = dateToStr(end);
+  summaryPickingEnd = false;
+  summaryActiveQuick = key;
+  summaryCalViewDate = new Date(end);
+  updateQuickBtnActive();
+  renderSummaryCalendar();
+  renderSummary();
+}
+
+document.getElementById("summaryQuickTodayBtn").addEventListener("click", () => applySummaryQuick("Today"));
+document.getElementById("summaryQuickLastWeekBtn").addEventListener("click", () => applySummaryQuick("LastWeek"));
+document.getElementById("summaryQuickThisWeekBtn").addEventListener("click", () => applySummaryQuick("ThisWeek"));
+document.getElementById("summaryQuickThisMonthBtn").addEventListener("click", () => applySummaryQuick("ThisMonth"));
+
+// 点日历里的某一天:第一次点定起点(同时先当成单日区间显示),第二次点定
+// 终点——点的日期比起点早就自动交换,保证 start<=end;再点第三次是新一轮
+// 选择(视为"下一次的第一次点")。
+function onSummaryDayClick(dateStr) {
+  if (!summaryPickingEnd) {
+    summaryRangeStart = dateStr;
+    summaryRangeEnd = dateStr;
+    summaryPickingEnd = true;
+  } else if (dateStr < summaryRangeStart) {
+    summaryRangeEnd = summaryRangeStart;
+    summaryRangeStart = dateStr;
+    summaryPickingEnd = false;
+  } else {
+    summaryRangeEnd = dateStr;
+    summaryPickingEnd = false;
+  }
+  summaryActiveQuick = null;
+  updateQuickBtnActive();
+  renderSummaryCalendar();
+  renderSummary();
+}
+
+function renderSummaryCalendar() {
+  const grid = document.getElementById("summaryCalendarGrid");
+  const label = document.getElementById("summaryCalMonthLabel");
+  const year = summaryCalViewDate.getFullYear();
+  const month = summaryCalViewDate.getMonth(); // 0-based
+  label.textContent = `${year}年${month + 1}月`;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const isCurrentMonth = year === today.getFullYear() && month === today.getMonth();
+  document.getElementById("summaryCalNextBtn").disabled = isCurrentMonth;
+
+  const firstWeekday = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  grid.innerHTML = "";
+  ["日", "一", "二", "三", "四", "五", "六"].forEach(w => {
+    const el = document.createElement("div");
+    el.className = "cal-weekday";
+    el.textContent = w;
+    grid.appendChild(el);
+  });
+  for (let i = 0; i < firstWeekday; i++) {
+    grid.appendChild(document.createElement("div"));
+  }
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateObj = new Date(year, month, d);
+    const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    const isFuture = dateObj > today;
+    const dayRows = historyRowsByDate[dateStr];
+    const inRange = summaryRangeStart && summaryRangeEnd && dateStr >= summaryRangeStart && dateStr <= summaryRangeEnd;
+    const isEdge = dateStr === summaryRangeStart || dateStr === summaryRangeEnd;
+    const cell = document.createElement("div");
+    cell.className = "cal-day"
+      + (isFuture ? " cal-day-future" : "")
+      + (dayRows ? " cal-day-has-data" : "")
+      + (dateStr === todayStr() ? " cal-day-today" : "")
+      + (inRange ? " cal-day-in-range" : "")
+      + (isEdge ? " cal-day-range-edge" : "");
+    cell.innerHTML = `<span>${d}</span>` + (dayRows ? '<div class="cal-dot"></div>' : "");
+    if (!isFuture) {
+      cell.addEventListener("click", () => onSummaryDayClick(dateStr));
+    }
+    grid.appendChild(cell);
+  }
+}
+
+document.getElementById("summaryCalPrevBtn").addEventListener("click", () => {
+  summaryCalViewDate = new Date(summaryCalViewDate.getFullYear(), summaryCalViewDate.getMonth() - 1, 1);
+  renderSummaryCalendar();
+});
+document.getElementById("summaryCalNextBtn").addEventListener("click", () => {
+  summaryCalViewDate = new Date(summaryCalViewDate.getFullYear(), summaryCalViewDate.getMonth() + 1, 1);
+  renderSummaryCalendar();
+});
+
 function renderSummary() {
   const listEl = document.getElementById("summaryList");
   if (!listEl || !currentCategory) return;
-  let start, end;
-  if (summaryMode === "month") {
-    start = new Date(summaryAnchorDate.getFullYear(), summaryAnchorDate.getMonth(), 1);
-    end = new Date(summaryAnchorDate.getFullYear(), summaryAnchorDate.getMonth() + 1, 0);
-    document.getElementById("summaryRangeLabel").textContent = `${start.getFullYear()}年${start.getMonth() + 1}月`;
-  } else {
-    start = startOfWeek(summaryAnchorDate);
-    end = endOfWeek(summaryAnchorDate);
-    const fmt = (d) => `${d.getMonth() + 1}/${d.getDate()}`;
-    document.getElementById("summaryRangeLabel").textContent = `${fmt(start)} - ${fmt(end)}`;
-  }
-  const startStr = dateToStr(start), endStr = dateToStr(end);
+  if (!summaryRangeStart) { listEl.innerHTML = ""; return; }
+  const startStr = summaryRangeStart, endStr = summaryRangeEnd || summaryRangeStart;
+  const fmt = (s) => { const [, m, d] = s.split("-").map(Number); return `${m}/${d}`; };
+  document.getElementById("summaryRangeLabel").textContent = startStr === endStr ? fmt(startStr) : `${fmt(startStr)} - ${fmt(endStr)}`;
 
   const totalsByItem = {};
   const order = [];
@@ -1462,36 +1611,9 @@ function renderSummary() {
   });
   const totalRow = document.createElement("div");
   totalRow.style.cssText = "font-weight:700;border-top:2px solid var(--paper-dim);padding-top:10px;margin-top:4px;";
-  totalRow.innerHTML = `<span>${summaryMode === "month" ? "本月" : "本周"}总消耗</span><span>${currencySymbol(settlementCurrency)}${grandTotal.toFixed(2)}</span>`;
+  totalRow.innerHTML = `<span>合计</span><span>${currencySymbol(settlementCurrency)}${grandTotal.toFixed(2)}</span>`;
   listEl.appendChild(totalRow);
 }
-
-document.getElementById("summaryModeWeekBtn").addEventListener("click", () => {
-  summaryMode = "week";
-  summaryAnchorDate = new Date();
-  document.getElementById("summaryModeWeekBtn").classList.add("active");
-  document.getElementById("summaryModeMonthBtn").classList.remove("active");
-  renderSummary();
-});
-document.getElementById("summaryModeMonthBtn").addEventListener("click", () => {
-  summaryMode = "month";
-  summaryAnchorDate = new Date();
-  document.getElementById("summaryModeMonthBtn").classList.add("active");
-  document.getElementById("summaryModeWeekBtn").classList.remove("active");
-  renderSummary();
-});
-document.getElementById("summaryPrevBtn").addEventListener("click", () => {
-  summaryAnchorDate = summaryMode === "month"
-    ? new Date(summaryAnchorDate.getFullYear(), summaryAnchorDate.getMonth() - 1, 1)
-    : new Date(summaryAnchorDate.getFullYear(), summaryAnchorDate.getMonth(), summaryAnchorDate.getDate() - 7);
-  renderSummary();
-});
-document.getElementById("summaryNextBtn").addEventListener("click", () => {
-  summaryAnchorDate = summaryMode === "month"
-    ? new Date(summaryAnchorDate.getFullYear(), summaryAnchorDate.getMonth() + 1, 1)
-    : new Date(summaryAnchorDate.getFullYear(), summaryAnchorDate.getMonth(), summaryAnchorDate.getDate() + 7);
-  renderSummary();
-});
 
 async function loadHistory() {
   try {
@@ -1872,12 +1994,15 @@ async function addItem() {
   const unit = document.getElementById("newItemUnit").value.trim() || "个";
   const price = parseFloat(document.getElementById("newItemPrice").value) || 0;
   const currency = document.getElementById("newItemCurrency").value;
+  const startingStockRaw = document.getElementById("newItemStartingStock").value;
+  const startingStock = startingStockRaw === "" ? undefined : parseFloat(startingStockRaw);
   if (!name) return;
   try {
-    await apiPost("addItem", { categoryId: currentCategory.id, name, unit, price, currency });
+    await apiPost("addItem", { categoryId: currentCategory.id, name, unit, price, currency, startingStock });
     document.getElementById("newItemName").value = "";
     document.getElementById("newItemUnit").value = "";
     document.getElementById("newItemPrice").value = "";
+    document.getElementById("newItemStartingStock").value = "";
     await loadItemsAndStock();
   } catch (err) {
     alert("添加失败: " + err.message);

@@ -514,10 +514,25 @@ function getItemRow(categoryId, itemId) {
   return null;
 }
 
-function addItem(categoryId, name, unit, price, currency) {
+function addItem(categoryId, name, unit, price, currency, startingStock) {
   const id = "item_" + new Date().getTime();
   const sheet = getOrCreateSheet(itemsSheetName(categoryId), ITEMS_HEADERS);
   sheet.appendRow([id, name, unit || "个", Number(price) || 0, currency || DEFAULT_CURRENCY, false]);
+  // 起始库存:补一条"昨天"的库存盘点记录当基准,这样这个物品第一次真正的
+  // 盘点就有"上一次"可以减,能算出消耗——不然全新物品第一次盘点永远只能是
+  // 空的(见 [[project_inventory_app]] 里"总库存也没了"那次的排查)。故意用
+  // "昨天"而不是"今天":如果就在物品创建当天也录入了真实盘点,两条记录得是
+  // 不同的日期,findPreviousStockCheck 才能把这条起始记录当成"上一次"。
+  if (startingStock !== undefined && startingStock !== null && startingStock !== "") {
+    const stockFieldId = stockCheckFieldId(categoryId);
+    if (stockFieldId) {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const values = {};
+      values[stockFieldId] = Number(startingStock);
+      logEntries(categoryId, yesterday, [{ itemId: id, itemName: name, values: values }], "起始库存");
+    }
+  }
   return { id: id, name: name, unit: unit, price: price, currency: currency || DEFAULT_CURRENCY, locked: false };
 }
 
@@ -774,7 +789,7 @@ function doPost(e) {
     if (action === "deleteCategory") { requireAdmin(session); deleteCategoryById(payload.categoryId); return jsonResponse({ status: "ok" }); }
     if (action === "setSettlementCurrency") { requireAdmin(session); setSettlementCurrency(payload.categoryId, payload.currency); return jsonResponse({ status: "ok" }); }
 
-    if (action === "addItem") { requireAdmin(session); return jsonResponse({ item: addItem(payload.categoryId, payload.name, payload.unit, payload.price, payload.currency) }); }
+    if (action === "addItem") { requireAdmin(session); return jsonResponse({ item: addItem(payload.categoryId, payload.name, payload.unit, payload.price, payload.currency, payload.startingStock) }); }
     if (action === "updateItem") { requireAdmin(session); updateItem(payload.categoryId, payload.itemId, payload.name, payload.unit, payload.price, payload.currency); return jsonResponse({ status: "ok" }); }
     if (action === "deleteItem") { requireAdmin(session); deleteItemById(payload.categoryId, payload.itemId); return jsonResponse({ status: "ok" }); }
     if (action === "lockItem") { requireAdmin(session); setItemLocked(payload.categoryId, payload.itemId, true); return jsonResponse({ status: "ok" }); }
