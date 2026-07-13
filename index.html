@@ -55,7 +55,7 @@
   .options {
     margin-top: 24px;
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr 1fr 1fr;
     gap: 16px;
     text-align: left;
   }
@@ -92,6 +92,12 @@
     color: var(--ink);
     border: 1.5px solid var(--gold-dark);
   }
+  .option .hint {
+    margin: 8px 0 0;
+    font-size: 11px;
+    color: var(--ink-dim);
+    line-height: 1.4;
+  }
 </style>
 </head>
 <body>
@@ -104,6 +110,12 @@
         <div class="icon">🌐</div>
         <h2>在线版</h2>
         <a class="cta secondary" href="app/">打开 →</a>
+      </div>
+      <div class="option">
+        <div class="icon">📱</div>
+        <h2>手机版</h2>
+        <a class="cta secondary" href="app/">打开 →</a>
+        <p class="hint">打开后点浏览器菜单"添加到主屏幕",就能像 App 一样用</p>
       </div>
       <div class="option">
         <div class="icon">🖥️</div>
