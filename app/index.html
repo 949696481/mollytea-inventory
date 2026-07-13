@@ -34,10 +34,13 @@
     background-image: radial-gradient(circle at 20% 0%, var(--bg-light) 0%, transparent 55%);
     color: var(--ink);
     min-height: 100vh;
-    padding-bottom: 48px;
+    /* viewport-fit=cover 让页面铺到刘海/圆角/Home 指示条底下,不加这个手机上
+       返回/退出按钮会紧贴屏幕边缘、很难点到——env() 在非全面屏设备上是 0,
+       不影响桌面浏览器。 */
+    padding-bottom: calc(48px + env(safe-area-inset-bottom, 0px));
   }
   header {
-    padding: 28px 20px 20px;
+    padding: calc(28px + env(safe-area-inset-top, 0px)) calc(20px + env(safe-area-inset-right, 0px)) 20px calc(20px + env(safe-area-inset-left, 0px));
     display: flex;
     align-items: center;
     gap: 14px;
