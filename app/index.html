@@ -419,7 +419,7 @@
           <input type="checkbox" id="rememberUsernameCheck" style="width:auto;margin:0;"> 记住用户名
         </label>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-dim);margin:4px 0 8px;">
-          <input type="checkbox" id="autoLoginCheck" style="width:auto;margin:0;"> 自动登录(下次打开直接进,不用再输入)
+          <input type="checkbox" id="autoLoginCheck" style="width:auto;margin:0;"> 自动登录
         </label>
         <button class="btn-primary" id="loginBtn">登录</button>
         <div class="status-line" id="loginStatus"></div>
@@ -1320,8 +1320,7 @@ async function saveToday() {
     statusEl.textContent = "已保存 ✓";
     todayInputs = {};
     document.getElementById("resultCard").style.display = "none";
-    await loadItemsAndStock();
-    await loadHistory();
+    await Promise.all([loadItemsAndStock(), loadHistory()]); // 两个互不依赖,并发拉,不用排队等
   } catch (err) {
     statusEl.className = "status-line error";
     statusEl.textContent = "保存失败: " + err.message;
@@ -1344,8 +1343,7 @@ async function saveDirectly() {
     statusEl.className = "status-line ok"; statusEl.textContent = "已保存 ✓";
     todayInputs = {};
     renderItemRows();
-    await loadItemsAndStock();
-    await loadHistory();
+    await Promise.all([loadItemsAndStock(), loadHistory()]); // 两个互不依赖,并发拉,不用排队等
   } catch (err) {
     statusEl.className = "status-line error"; statusEl.textContent = "保存失败: " + err.message;
   }
@@ -1741,7 +1739,10 @@ document.getElementById("deleteDayBtn").addEventListener("click", async () => {
   try {
     await apiPost("deleteLogDay", { categoryId: currentCategory.id, date: currentDayDetailDate });
     showView("detail");
-    await loadHistory();
+    // 删了这一天,受影响物品的总库存后端已经自动回退了(见 deleteLogDay 的
+    // recomputeTotalStockForItem)——这里得把"目前总库存"也刷一遍,不然界面
+    // 还停在删除前的旧数字上,得等下一次别的操作才会碰巧刷新。
+    await Promise.all([loadHistory(), loadItemsAndStock()]);
   } catch (err) {
     alert("删除失败: " + err.message);
   }
@@ -1754,9 +1755,10 @@ async function deleteDayByEditor(editedBy, count) {
   if (!confirm(`删除 ${formatDateLabel(currentDayDetailDate)} 由「${label}」录入/编辑的 ${count} 条记录?其他人当天的记录不受影响。`)) return;
   try {
     await apiPost("deleteLogDayByEditor", { categoryId: currentCategory.id, date: currentDayDetailDate, editedBy });
-    await loadHistory();
+    // openDayDetail 要用 loadHistory 拉回来的 historyRowsByDate,得等它先跑完;
+    // loadItemsAndStock 跟这个没关系,不用等 loadHistory,两个并发拉就行。
+    await Promise.all([loadHistory(), loadItemsAndStock()]);
     openDayDetail(currentDayDetailDate, historyRowsByDate[currentDayDetailDate] || []);
-    await loadItemsAndStock();
   } catch (err) {
     alert("删除失败: " + err.message);
   }
@@ -1816,79 +1818,105 @@ function openDayDetail(date, dayRows) {
   const listEl = document.getElementById("dayDetailList");
   listEl.innerHTML = "";
   if (dayRows.length === 0) {
-    listEl.innerHTML = `<div class="empty">这天没有记录</div>`;
-    return;
-  }
-  // 按记录人分组:同一天如果有多个人录入/编辑过,分开标注是谁的,而不是混在一起猜。
-  // 分组用的 key 用原始值(没有就是空字符串),跟后端删除时按 edited_by 匹配的逻辑
-  // 保持一致;"未知"只是给没有记录人的旧数据一个展示用的名字,不能拿去发请求。
-  const groups = [];
-  const groupByEditor = {};
-  dayRows.forEach(r => {
-    const key = r.editedBy || "";
-    if (!groupByEditor[key]) {
-      groupByEditor[key] = { editor: key, rows: [] };
-      groups.push(groupByEditor[key]);
-    }
-    groupByEditor[key].rows.push(r);
-  });
-  const showEditorHeaders = groups.length > 1;
-
-  let dayTotal = 0;
-  groups.forEach(group => {
-    if (showEditorHeaders) {
-      const header = document.createElement("div");
-      header.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin:12px 0 4px;";
-      const label = document.createElement("span");
-      label.style.cssText = "font-weight:700;color:var(--ink);";
-      label.textContent = (group.editor || "未知") + "：";
-      header.appendChild(label);
-      if (isAdmin()) {
-        const delBtn = document.createElement("button");
-        delBtn.className = "btn-ghost";
-        delBtn.style.cssText = "font-size:12px;padding:2px 8px;";
-        delBtn.textContent = "删除这部分";
-        delBtn.addEventListener("click", () => deleteDayByEditor(group.editor, group.rows.length));
-        header.appendChild(delBtn);
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "这天没有记录";
+    listEl.appendChild(empty);
+  } else {
+    // 按记录人分组:同一天如果有多个人录入/编辑过,分开标注是谁的,而不是混在一起猜。
+    // 分组用的 key 用原始值(没有就是空字符串),跟后端删除时按 edited_by 匹配的逻辑
+    // 保持一致;"未知"只是给没有记录人的旧数据一个展示用的名字,不能拿去发请求。
+    const groups = [];
+    const groupByEditor = {};
+    dayRows.forEach(r => {
+      const key = r.editedBy || "";
+      if (!groupByEditor[key]) {
+        groupByEditor[key] = { editor: key, rows: [] };
+        groups.push(groupByEditor[key]);
       }
-      listEl.appendChild(header);
-    }
-    group.rows.forEach(r => {
-      const it = items.find(x => x.id === r.itemId);
-      const editedLabel = r.editedAt ? new Date(r.editedAt).toLocaleString("zh-CN", { hour12: false }) : "";
-      const metaLabel = showEditorHeaders
-        ? editedLabel
-        : (r.editedBy && editedLabel ? `${r.editedBy} 记录于 ${editedLabel}` : (r.editedBy ? `记录人: ${r.editedBy}` : (editedLabel ? "编辑于 " + editedLabel : "")));
-      const row = document.createElement("div");
-      row.className = "item-line history-row";
-      if (r.usage !== null && r.usage !== undefined) {
-        const converted = convertAmount(r.cost, it ? it.currency : null);
-        if (converted && converted.ok) dayTotal += converted.value;
-        const tagClass = r.usage < 0 ? "tag restock" : "tag";
-        const tagText = r.usage < 0 ? "看起来补货了" : formatConverted(r.cost, it ? it.currency : null);
-        row.innerHTML = `<span>${r.itemName} 用了 ${Number(r.usage).toFixed(2)} ${it ? it.unit : ""}</span><span class="${tagClass}">${tagText}</span>`;
-      } else {
-        row.innerHTML = `<span>${r.itemName}</span><span class="tag">暂无消耗数据</span>`;
-      }
-      row.addEventListener("click", () => openEditEntry(r));
-      listEl.appendChild(row);
-      if (metaLabel) {
-        const editedDiv = document.createElement("div");
-        editedDiv.style.cssText = "font-size:11px;color:var(--ink-dim);margin-top:-6px;margin-bottom:6px;";
-        editedDiv.textContent = metaLabel;
-        listEl.appendChild(editedDiv);
-      }
-      // 管理员能直接在这里看"这条记录被谁改过、什么时候",不用先点进编辑页
-      // 再点"历史版本"——跟保存时的覆盖提示是同一个目的,让"是不是有人顶掉了
-      // 别人的记录"这件事一眼就能查,不用靠记忆或者去问。
-      if (isAdmin()) appendInlineHistoryToggle(listEl, r);
+      groupByEditor[key].rows.push(r);
     });
-  });
-  const totalRow = document.createElement("div");
-  totalRow.className = "item-line";
-  totalRow.style.cssText = "font-weight:700;border-top:2px solid var(--paper-dim);padding-top:10px;margin-top:4px;";
-  totalRow.innerHTML = `<span>今日总消耗</span><span>${currencySymbol(settlementCurrency)}${dayTotal.toFixed(2)}</span>`;
-  listEl.appendChild(totalRow);
+    const showEditorHeaders = groups.length > 1;
+
+    let dayTotal = 0;
+    groups.forEach(group => {
+      if (showEditorHeaders) {
+        const header = document.createElement("div");
+        header.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin:12px 0 4px;";
+        const label = document.createElement("span");
+        label.style.cssText = "font-weight:700;color:var(--ink);";
+        label.textContent = (group.editor || "未知") + "：";
+        header.appendChild(label);
+        if (isAdmin()) {
+          const delBtn = document.createElement("button");
+          delBtn.className = "btn-ghost";
+          delBtn.style.cssText = "font-size:12px;padding:2px 8px;";
+          delBtn.textContent = "删除这部分";
+          delBtn.addEventListener("click", () => deleteDayByEditor(group.editor, group.rows.length));
+          header.appendChild(delBtn);
+        }
+        listEl.appendChild(header);
+      }
+      group.rows.forEach(r => {
+        const it = items.find(x => x.id === r.itemId);
+        const editedLabel = r.editedAt ? new Date(r.editedAt).toLocaleString("zh-CN", { hour12: false }) : "";
+        const metaLabel = showEditorHeaders
+          ? editedLabel
+          : (r.editedBy && editedLabel ? `${r.editedBy} 记录于 ${editedLabel}` : (r.editedBy ? `记录人: ${r.editedBy}` : (editedLabel ? "编辑于 " + editedLabel : "")));
+        const row = document.createElement("div");
+        row.className = "item-line history-row";
+        if (r.usage !== null && r.usage !== undefined) {
+          const converted = convertAmount(r.cost, it ? it.currency : null);
+          if (converted && converted.ok) dayTotal += converted.value;
+          const tagClass = r.usage < 0 ? "tag restock" : "tag";
+          const tagText = r.usage < 0 ? "看起来补货了" : formatConverted(r.cost, it ? it.currency : null);
+          row.innerHTML = `<span>${r.itemName} 用了 ${Number(r.usage).toFixed(2)} ${it ? it.unit : ""}</span><span class="${tagClass}">${tagText}</span>`;
+        } else {
+          row.innerHTML = `<span>${r.itemName}</span><span class="tag">暂无消耗数据</span>`;
+        }
+        row.addEventListener("click", () => openEditEntry(r));
+        listEl.appendChild(row);
+        if (metaLabel) {
+          const editedDiv = document.createElement("div");
+          editedDiv.style.cssText = "font-size:11px;color:var(--ink-dim);margin-top:-6px;margin-bottom:6px;";
+          editedDiv.textContent = metaLabel;
+          listEl.appendChild(editedDiv);
+        }
+        // 管理员能直接在这里看"这条记录被谁改过、什么时候",不用先点进编辑页
+        // 再点"历史版本"——跟保存时的覆盖提示是同一个目的,让"是不是有人顶掉了
+        // 别人的记录"这件事一眼就能查,不用靠记忆或者去问。
+        if (isAdmin()) appendInlineHistoryToggle(listEl, r);
+      });
+    });
+    const totalRow = document.createElement("div");
+    totalRow.className = "item-line";
+    totalRow.style.cssText = "font-weight:700;border-top:2px solid var(--paper-dim);padding-top:10px;margin-top:4px;";
+    totalRow.innerHTML = `<span>今日总消耗</span><span>${currencySymbol(settlementCurrency)}${dayTotal.toFixed(2)}</span>`;
+    listEl.appendChild(totalRow);
+  }
+
+  // 不管这天有没有记录,都能给"还没记录的物品"补录——忘了当天登记的话,事后
+  // 回来点这一天补上就行,不用非得记得"今天必须录完"。复用 openEditEntry 同一套
+  // 保存面板,只是传一份 values 为空的记录进去,当"新增"用。
+  const recordedItemIds = new Set(dayRows.map(r => r.itemId));
+  const missingItems = items.filter(it => !recordedItemIds.has(it.id));
+  if (missingItems.length > 0) {
+    const addSection = document.createElement("div");
+    addSection.style.cssText = "margin-top:16px;padding-top:12px;border-top:1px dashed var(--paper-dim);";
+    const label = document.createElement("div");
+    label.style.cssText = "font-size:12px;color:var(--ink-dim);margin-bottom:8px;";
+    label.textContent = "还没有记录的物品(补录):";
+    addSection.appendChild(label);
+    missingItems.forEach(it => {
+      const btn = document.createElement("button");
+      btn.className = "btn-ghost";
+      btn.style.cssText = "margin:0 6px 6px 0;font-size:12px;padding:4px 10px;";
+      btn.textContent = "+ " + it.name;
+      btn.addEventListener("click", () => openEditEntry({ date: currentDayDetailDate, itemId: it.id, itemName: it.name, values: {} }));
+      addSection.appendChild(btn);
+    });
+    listEl.appendChild(addSection);
+  }
 }
 
 // ---------- 编辑一条历史记录:复用同一个 upsert,传一个过去的日期就是"编辑" ----------
@@ -2000,8 +2028,8 @@ document.getElementById("saveEditBtn").addEventListener("click", async () => {
     document.getElementById("editEntryCard").style.display = "none";
     const wasQuickOverride = editingIsQuickStockOverride;
     editingEntry = null;
-    await loadItemsAndStock();
-    if (!wasQuickOverride) await loadHistory();
+    // 两个互不依赖,并发拉,不用排队等;总库存磁贴那条路径不用重新拉全部记录。
+    await Promise.all(wasQuickOverride ? [loadItemsAndStock()] : [loadItemsAndStock(), loadHistory()]);
   } catch (err) {
     statusEl.className = "status-line error"; statusEl.textContent = "保存失败: " + err.message;
   }

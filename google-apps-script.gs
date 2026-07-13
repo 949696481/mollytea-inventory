@@ -667,6 +667,19 @@ function logEntries(categoryId, date, entries, editedBy, confirmOverwrite) {
     if (conflicts.length > 0) return { needsConfirm: true, conflicts: conflicts };
   }
 
+  // 物品表只读一次、这一批 entries 共用——total_stock 的读取/写入都在这份
+  // 内存数据上做完再统一落盘。之前每个 entry 各自调 getItemRow/setTotalStock,
+  // 都会重新把整张 items 表读一遍,一次保存好几个物品时越存越慢,是这次顺手
+  // 修的性能问题(见 [[project_inventory_app]] 加载慢的排查)。
+  const itemsSheet = stockFieldId ? getOrCreateSheet(itemsSheetName(categoryId), ITEMS_HEADERS) : null;
+  const itemRows = itemsSheet ? itemsSheet.getDataRange().getValues() : null;
+  const itemRowIndexById = {};
+  if (itemRows) {
+    for (let i = 1; i < itemRows.length; i++) {
+      if (itemRows[i][0]) itemRowIndexById[String(itemRows[i][0])] = i;
+    }
+  }
+
   entries.forEach(function (entry) {
     const itemId = entry.itemId;
     let existingRowIndex = -1;
@@ -690,9 +703,9 @@ function logEntries(categoryId, date, entries, editedBy, confirmOverwrite) {
         // 真的一条历史记录都没有(全新物品的第一次盘点),才退回去用物品自己的
         // total_stock 字段当基准——这就是起始库存生效的地方。
         let prevStock = findPreviousStockCheck(rows, itemId, date, stockFieldId);
-        if (prevStock === null) {
-          const itemRow = getItemRow(categoryId, itemId);
-          const rawTotal = itemRow ? itemRow.values[6] : "";
+        const itemRowIdx = itemRowIndexById[String(itemId)];
+        if (prevStock === null && itemRowIdx !== undefined) {
+          const rawTotal = itemRows[itemRowIdx][6];
           if (rawTotal !== "" && rawTotal !== undefined && rawTotal !== null) prevStock = Number(rawTotal);
         }
         if (prevStock !== null) {
@@ -708,7 +721,10 @@ function logEntries(categoryId, date, entries, editedBy, confirmOverwrite) {
         const isLatestForItem = !rows.some(function (r, idx) {
           return idx > 0 && idx !== existingRowIndex && String(r[1]) === String(itemId) && formatDate(r[0]) > targetDateStr;
         });
-        if (isLatestForItem) setTotalStock(categoryId, itemId, stockVal);
+        if (isLatestForItem && itemRowIdx !== undefined) {
+          itemsSheet.getRange(itemRowIdx + 1, 7).setValue(stockVal);
+          itemRows[itemRowIdx][6] = stockVal; // 保持内存副本同步,防止同一批里同个物品出现两次时读到旧值
+        }
       }
     }
 

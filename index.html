@@ -52,12 +52,8 @@
     color: var(--ink);
     letter-spacing: 0.3px;
   }
-  p.tagline {
-    margin: 0 0 32px;
-    color: var(--ink-dim);
-    font-size: 14px;
-  }
   .options {
+    margin-top: 24px;
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 16px;
@@ -79,13 +75,6 @@
     font-size: 15px;
     color: var(--ink);
   }
-  .option p {
-    margin: 0 0 16px;
-    font-size: 12px;
-    color: var(--ink-dim);
-    line-height: 1.5;
-    flex: 1;
-  }
   .cta {
     display: block;
     width: 100%;
@@ -103,40 +92,25 @@
     color: var(--ink);
     border: 1.5px solid var(--gold-dark);
   }
-  .shared-note {
-    margin-top: 24px;
-    font-size: 12px;
-    color: var(--ink-dim);
-    line-height: 1.6;
-  }
-  .shared-note b { color: var(--ink); }
 </style>
 </head>
 <body>
   <div class="card">
     <div class="mark"><img src="app/icon-192.png" alt="库存登记"></div>
     <h1>库存登记</h1>
-    <p class="tagline">MollyTea 门店库存记录 App</p>
 
     <div class="options">
       <div class="option">
-        <div class="icon">🖥️</div>
-        <h2>下载 Windows 版</h2>
-        <p>装在电脑上,像正常软件一样开,双击图标就能用。首次打开 Windows 可能提示"未知发布者"——点"更多信息" → "仍要运行"即可。</p>
-        <a class="cta" href="https://github.com/949696481/mollytea-inventory/releases/latest/download/InventoryApp-Windows.exe">下载 .exe →</a>
+        <div class="icon">🌐</div>
+        <h2>在线版</h2>
+        <a class="cta secondary" href="app/">打开 →</a>
       </div>
       <div class="option">
-        <div class="icon">🌐</div>
-        <h2>在线进入 App</h2>
-        <p>不用装任何东西,浏览器打开就能用。在 Chrome / Edge 里,地址栏还会出现一个安装图标,点一下也能变成桌面独立窗口。</p>
-        <a class="cta secondary" href="app/">打开网页版 →</a>
+        <div class="icon">🖥️</div>
+        <h2>下载 Windows 版</h2>
+        <a class="cta" href="https://github.com/949696481/mollytea-inventory/releases/latest/download/InventoryApp-Windows.exe">下载 →</a>
       </div>
     </div>
-
-    <p class="shared-note">
-      两种方式用的是<b>同一份数据</b>——不管从哪边登录、哪边改了记录,另一边打开都能看到。
-      管理员和员工用同一个入口,各自的账号决定能看到/能改什么。
-    </p>
   </div>
 </body>
 </html>
