@@ -415,6 +415,12 @@
         <input id="loginUsername" placeholder="用户名">
         <label>密码</label>
         <input id="loginPassword" type="password" placeholder="密码">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-dim);margin:8px 0 0;">
+          <input type="checkbox" id="rememberUsernameCheck" style="width:auto;margin:0;"> 记住用户名
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-dim);margin:4px 0 8px;">
+          <input type="checkbox" id="autoLoginCheck" style="width:auto;margin:0;"> 自动登录(下次打开直接进,不用再输入)
+        </label>
         <button class="btn-primary" id="loginBtn">登录</button>
         <div class="status-line" id="loginStatus"></div>
       </div>
@@ -826,6 +832,9 @@ document.getElementById("logoutBtn").addEventListener("click", async () => {
   currentStore = null;
   document.getElementById("loginUsername").value = "";
   document.getElementById("loginPassword").value = "";
+  // 主动退出登录就该真的退出——"自动登录"如果不清掉,下次一打开又直接
+  // 进去了,等于退出没生效。"记住用户名"留着没关系,不影响"已退出"这件事。
+  localStorage.removeItem(AUTOLOGIN_KEY);
   showView("login");
   await initLoginView();
 });
@@ -2112,10 +2121,20 @@ async function addItem() {
 }
 
 // ---------- 登录 / 首次设置管理员账号 ----------
+const REMEMBER_USERNAME_KEY = "inv_remember_username_v1";
+const AUTOLOGIN_KEY = "inv_autologin_v1"; // {username, password},明文存在浏览器本地——
+// 图的就是"下次不用再输",这是用户自己选的权衡,不是每个账号都必须开。
+
 async function initLoginView() {
   const hasAdminFlag = (await apiGet("hasAdmin", {})).hasAdmin;
   document.getElementById("registerAdminCard").style.display = hasAdminFlag ? "none" : "block";
   document.getElementById("loginCard").style.display = hasAdminFlag ? "block" : "none";
+  const rememberedUsername = localStorage.getItem(REMEMBER_USERNAME_KEY);
+  if (rememberedUsername) {
+    document.getElementById("loginUsername").value = rememberedUsername;
+    document.getElementById("rememberUsernameCheck").checked = true;
+  }
+  document.getElementById("autoLoginCheck").checked = !!localStorage.getItem(AUTOLOGIN_KEY);
 }
 
 async function afterLogin(user) {
@@ -2164,6 +2183,16 @@ document.getElementById("loginBtn").addEventListener("click", async () => {
     const result = await apiPost("login", { username, password });
     document.getElementById("loginPassword").value = "";
     statusEl.className = "status-line"; statusEl.textContent = "";
+    if (document.getElementById("rememberUsernameCheck").checked) {
+      localStorage.setItem(REMEMBER_USERNAME_KEY, username);
+    } else {
+      localStorage.removeItem(REMEMBER_USERNAME_KEY);
+    }
+    if (document.getElementById("autoLoginCheck").checked) {
+      localStorage.setItem(AUTOLOGIN_KEY, JSON.stringify({ username, password }));
+    } else {
+      localStorage.removeItem(AUTOLOGIN_KEY);
+    }
     saveSession(result.token, result.user);
     await afterLogin(result.user);
   } catch (err) {
@@ -2264,6 +2293,22 @@ document.getElementById("toggleItemsBtn").addEventListener("click", () => {
       return;
     } catch (err) {
       clearSession();
+    }
+  }
+  // 没有有效的登录态(第一次打开,或者 14 天的 session 过期了)——如果之前
+  // 勾过"自动登录",在这里用存的账号密码直接重新登一次,不用用户再动手。
+  // 密码不对了(比如管理员改过)就把这份自动登录清掉,退回正常登录页,
+  // 不要一直静默重试报错。
+  const autoLoginRaw = localStorage.getItem(AUTOLOGIN_KEY);
+  if (autoLoginRaw) {
+    try {
+      const { username, password } = JSON.parse(autoLoginRaw);
+      const result = await apiPost("login", { username, password });
+      saveSession(result.token, result.user);
+      await afterLogin(result.user);
+      return;
+    } catch (err) {
+      localStorage.removeItem(AUTOLOGIN_KEY);
     }
   }
   showView("login");

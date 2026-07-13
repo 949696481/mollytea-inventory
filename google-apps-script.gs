@@ -580,6 +580,36 @@ function verifyCurrentPassword(session, password) {
 function getItemsWithLatestStockCheck(categoryId) {
   const items = listItems(categoryId);
   const stockFieldId = stockCheckFieldId(categoryId);
+
+  // 自愈式迁移:total_stock 这一列是这次改动才加的,在这之前就存在的老物品
+  // (哪怕日志表里明明有真实的盘点历史)第7列本来就是空的——不退回去扫一次
+  // 日志表的话,这些老物品会平白显示"暂无记录",总库存磁贴也没法点(见
+  // [[project_inventory_app]] 里"总库存变成暂无记录了"那次的排查)。只在真的
+  // 遇到 total_stock 为空、但日志表有值的物品时才扫,扫到就顺手写回
+  // total_stock,下次就不用再扫了——不需要手动跑一次性迁移脚本。
+  if (stockFieldId) {
+    const needsBackfill = items.filter(function (it) { return it.totalStock === null || it.totalStock === undefined; });
+    if (needsBackfill.length > 0) {
+      const logSheet = getOrCreateSheet(logSheetName(categoryId), LOG_HEADERS);
+      const rows = logSheet.getDataRange().getValues();
+      const dataRows = [];
+      for (let i = 1; i < rows.length; i++) { if (rows[i][1]) dataRows.push(rows[i]); }
+      dataRows.sort(function (a, b) { return new Date(a[0]).getTime() - new Date(b[0]).getTime(); });
+      const scannedLatest = {};
+      dataRows.forEach(function (row) {
+        const values = parseValues(row[3]);
+        const v = values[stockFieldId];
+        if (v !== undefined && v !== null && v !== "") scannedLatest[row[1]] = Number(v);
+      });
+      needsBackfill.forEach(function (it) {
+        if (scannedLatest[it.id] !== undefined) {
+          it.totalStock = scannedLatest[it.id];
+          setTotalStock(categoryId, it.id, scannedLatest[it.id]);
+        }
+      });
+    }
+  }
+
   const latest = {};
   items.forEach(function (it) {
     if (it.totalStock !== null && it.totalStock !== undefined) latest[it.id] = it.totalStock;
