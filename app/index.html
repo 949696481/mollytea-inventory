@@ -1778,15 +1778,18 @@ async function deleteDayByEditor(editedBy, count) {
   }
 }
 
-// 管理员专用:在"某天详情"里每条记录下面加一个"查看编辑历史"的小开关,
-// 点开才(懒加载,只查一次)去查这条记录被谁改过、什么时候、改成了什么——
-// 复用编辑面板里"历史版本"用的同一个后端接口,只是不用先点进编辑页再点一次。
-function appendInlineHistoryToggle(listEl, r) {
+// 管理员专用:在"某天详情"里每个人(一个编辑分组)的板块最下面加一个
+// "查看编辑历史"的小开关,点开才(懒加载,只查一次)去查这个人这一批记录里
+// 每个物品被谁改过、什么时候、改成了什么——复用编辑面板里"历史版本"用的
+// 同一个后端接口,按物品并发查(Promise.all,不是排队一个个查)再合并成一份
+// 按时间倒序的列表。原来是每个物品各自一个"查看编辑历史",物品一多屏幕上
+// 全是重复的按钮;现在一个人只用点一次就能看到他当天动过的所有物品。
+function appendGroupHistoryToggle(listEl, group) {
   const wrap = document.createElement("div");
-  wrap.style.cssText = "margin:-4px 0 10px;";
+  wrap.style.cssText = "margin:6px 0 4px;";
   const btn = document.createElement("button");
   btn.className = "btn-ghost";
-  btn.style.cssText = "font-size:11px;padding:2px 8px;";
+  btn.style.cssText = "font-size:12px;padding:2px 8px;";
   btn.textContent = "查看编辑历史";
   const list = document.createElement("div");
   list.style.cssText = "display:none;margin-top:6px;";
@@ -1798,10 +1801,18 @@ function appendInlineHistoryToggle(listEl, r) {
     loaded = true;
     list.innerHTML = `<div class="hint">加载中…</div>`;
     try {
-      const { history } = await apiGet("getEntryHistory", { categoryId: currentCategory.id, itemId: r.itemId, date: r.date });
-      if (!history.length) { list.innerHTML = `<div class="hint">这条记录没有被改过</div>`; return; }
+      const perItem = await Promise.all(group.rows.map(r =>
+        apiGet("getEntryHistory", { categoryId: currentCategory.id, itemId: r.itemId, date: r.date })
+          .then(res => ({ itemName: r.itemName, history: res.history }))
+      ));
+      const flat = [];
+      perItem.forEach(({ itemName, history }) => {
+        history.forEach(h => flat.push(Object.assign({ itemName: itemName }, h)));
+      });
+      if (!flat.length) { list.innerHTML = `<div class="hint">这天没有被改过的记录</div>`; return; }
+      flat.sort((a, b) => new Date(b.editedAt) - new Date(a.editedAt));
       list.innerHTML = "";
-      history.forEach(h => {
+      flat.forEach(h => {
         const timeLabel = h.editedAt ? new Date(h.editedAt).toLocaleString("zh-CN", { hour12: false }) : "";
         const fieldSummary = fields.map(f => {
           const v = h.values && h.values[f.id];
@@ -1809,7 +1820,7 @@ function appendInlineHistoryToggle(listEl, r) {
         }).filter(Boolean).join(" · ");
         const item = document.createElement("div");
         item.style.cssText = "font-size:11px;color:var(--ink-dim);padding:2px 0;";
-        item.textContent = `${h.editedBy || "未知"} · ${timeLabel} · ${fieldSummary || "(空)"}`;
+        item.textContent = `${h.itemName} · ${h.editedBy || "未知"} · ${timeLabel} · ${fieldSummary || "(空)"}`;
         list.appendChild(item);
       });
     } catch (err) {
@@ -1904,7 +1915,6 @@ function openDayDetail(date, dayRows) {
           row.innerHTML = `<span>${r.itemName}</span><span class="tag">+${incomingVal}${it ? it.unit : ""}</span>`;
           row.addEventListener("click", () => openEditEntry(r));
           listEl.appendChild(row);
-          if (isAdmin()) appendInlineHistoryToggle(listEl, r);
         });
       }
 
@@ -1928,12 +1938,12 @@ function openDayDetail(date, dayRows) {
           }
           row.addEventListener("click", () => openEditEntry(r));
           listEl.appendChild(row);
-          // 管理员能直接在这里看"这条记录被谁改过、什么时候",不用先点进编辑页
-          // 再点"历史版本"——跟保存时的覆盖提示是同一个目的,让"是不是有人顶掉了
-          // 别人的记录"这件事一眼就能查,不用靠记忆或者去问。
-          if (isAdmin()) appendInlineHistoryToggle(listEl, r);
         });
       }
+
+      // 每个人一个"查看编辑历史",放在这个人这一整块(进货+消耗)的最下面——
+      // 不再每个物品各自一个,点开显示这个人当天动过的所有物品,不用一个个点开找。
+      if (isAdmin()) appendGroupHistoryToggle(listEl, group);
     });
     const totalRow = document.createElement("div");
     totalRow.className = "item-line";
