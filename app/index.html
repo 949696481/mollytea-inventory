@@ -1852,55 +1852,88 @@ function openDayDetail(date, dayRows) {
     });
     const showEditorHeaders = groups.length > 1;
 
+    // 每个人一个头,写"最后编辑于 X",不再每个物品下面各贴一遍同一个人同一个
+    // 时间——同一批保存的好几个物品,原来那样看起来像重复信息。用组内最晚的
+    // editedAt(理论上一批保存会是同一个时间,单条后续编辑过的话取那条更晚的)。
     let dayTotal = 0;
     groups.forEach(group => {
-      if (showEditorHeaders) {
-        const header = document.createElement("div");
-        header.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin:12px 0 4px;";
-        const label = document.createElement("span");
-        label.style.cssText = "font-weight:700;color:var(--ink);";
-        label.textContent = (group.editor || "未知") + "：";
-        header.appendChild(label);
-        if (isAdmin()) {
-          const delBtn = document.createElement("button");
-          delBtn.className = "btn-ghost";
-          delBtn.style.cssText = "font-size:12px;padding:2px 8px;";
-          delBtn.textContent = "删除这部分";
-          delBtn.addEventListener("click", () => deleteDayByEditor(group.editor, group.rows.length));
-          header.appendChild(delBtn);
-        }
-        listEl.appendChild(header);
+      const latestEditedAt = group.rows.reduce((best, r) => (r.editedAt && (!best || r.editedAt > best)) ? r.editedAt : best, null);
+      const latestLabel = latestEditedAt ? new Date(latestEditedAt).toLocaleString("zh-CN", { hour12: false }) : "";
+      const header = document.createElement("div");
+      header.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin:12px 0 4px;";
+      const label = document.createElement("span");
+      label.style.cssText = "font-weight:700;color:var(--ink);";
+      label.textContent = (group.editor || "未知") + (latestLabel ? ` 最后编辑于 ${latestLabel}` : "");
+      header.appendChild(label);
+      if (showEditorHeaders && isAdmin()) {
+        const delBtn = document.createElement("button");
+        delBtn.className = "btn-ghost";
+        delBtn.style.cssText = "font-size:12px;padding:2px 8px;";
+        delBtn.textContent = "删除这部分";
+        delBtn.addEventListener("click", () => deleteDayByEditor(group.editor, group.rows.length));
+        header.appendChild(delBtn);
       }
-      group.rows.forEach(r => {
-        const it = items.find(x => x.id === r.itemId);
-        const editedLabel = r.editedAt ? new Date(r.editedAt).toLocaleString("zh-CN", { hour12: false }) : "";
-        const metaLabel = showEditorHeaders
-          ? editedLabel
-          : (r.editedBy && editedLabel ? `${r.editedBy} 记录于 ${editedLabel}` : (r.editedBy ? `记录人: ${r.editedBy}` : (editedLabel ? "编辑于 " + editedLabel : "")));
-        const row = document.createElement("div");
-        row.className = "item-line history-row";
-        if (r.usage !== null && r.usage !== undefined) {
-          const converted = convertAmount(r.cost, it ? it.currency : null);
-          if (converted && converted.ok) dayTotal += converted.value;
-          const tagClass = r.usage < 0 ? "tag restock" : "tag";
-          const tagText = r.usage < 0 ? "看起来补货了" : formatConverted(r.cost, it ? it.currency : null);
-          row.innerHTML = `<span>${r.itemName} 用了 ${Number(r.usage).toFixed(2)} ${it ? it.unit : ""}</span><span class="${tagClass}">${tagText}</span>`;
-        } else {
-          row.innerHTML = `<span>${r.itemName}</span><span class="tag">暂无消耗数据</span>`;
-        }
-        row.addEventListener("click", () => openEditEntry(r));
-        listEl.appendChild(row);
-        if (metaLabel) {
-          const editedDiv = document.createElement("div");
-          editedDiv.style.cssText = "font-size:11px;color:var(--ink-dim);margin-top:-6px;margin-bottom:6px;";
-          editedDiv.textContent = metaLabel;
-          listEl.appendChild(editedDiv);
-        }
-        // 管理员能直接在这里看"这条记录被谁改过、什么时候",不用先点进编辑页
-        // 再点"历史版本"——跟保存时的覆盖提示是同一个目的,让"是不是有人顶掉了
-        // 别人的记录"这件事一眼就能查,不用靠记忆或者去问。
-        if (isAdmin()) appendInlineHistoryToggle(listEl, r);
+      listEl.appendChild(header);
+
+      // 同一条记录可能既有进货又算出了消耗(比如牛奶今天进货70、晚盘点也填
+      // 了)——两边都要出现,不是二选一,所以先各自筛一遍,而不是共用一个循环。
+      const incomingRows = incomingFieldId
+        ? group.rows.filter(r => {
+            const v = (r.values || {})[incomingFieldId];
+            return v !== undefined && v !== null && v !== "" && !isNaN(Number(v)) && Number(v) !== 0;
+          })
+        : [];
+      const usageRows = group.rows.filter(r => {
+        if (r.usage !== null && r.usage !== undefined) return true;
+        // 只有进货、没有消耗数据的记录已经在"今日进货"里说明过了,这里不用
+        // 再重复一条"暂无消耗数据"——那条 tag 对着一个从没打算算消耗的记录
+        // 没有意义,只会让人以为是漏填了盘点。
+        return !incomingRows.includes(r);
       });
+
+      if (incomingRows.length > 0) {
+        const incomingHeader = document.createElement("div");
+        incomingHeader.style.cssText = "font-weight:600;color:var(--ink-dim);font-size:13px;margin:8px 0 2px;";
+        incomingHeader.textContent = "今日进货";
+        listEl.appendChild(incomingHeader);
+        incomingRows.forEach(r => {
+          const it = items.find(x => x.id === r.itemId);
+          const incomingVal = Number((r.values || {})[incomingFieldId]);
+          const row = document.createElement("div");
+          row.className = "item-line history-row";
+          row.innerHTML = `<span>${r.itemName}</span><span class="tag">+${incomingVal}${it ? it.unit : ""}</span>`;
+          row.addEventListener("click", () => openEditEntry(r));
+          listEl.appendChild(row);
+          if (isAdmin()) appendInlineHistoryToggle(listEl, r);
+        });
+      }
+
+      if (usageRows.length > 0) {
+        const usageHeader = document.createElement("div");
+        usageHeader.style.cssText = "font-weight:600;color:var(--ink-dim);font-size:13px;margin:8px 0 2px;";
+        usageHeader.textContent = "今日消耗";
+        listEl.appendChild(usageHeader);
+        usageRows.forEach(r => {
+          const it = items.find(x => x.id === r.itemId);
+          const row = document.createElement("div");
+          row.className = "item-line history-row";
+          if (r.usage !== null && r.usage !== undefined) {
+            const converted = convertAmount(r.cost, it ? it.currency : null);
+            if (converted && converted.ok) dayTotal += converted.value;
+            const tagClass = r.usage < 0 ? "tag restock" : "tag";
+            const tagText = r.usage < 0 ? "看起来补货了" : formatConverted(r.cost, it ? it.currency : null);
+            row.innerHTML = `<span>${r.itemName} 用了 ${Number(r.usage).toFixed(2)} ${it ? it.unit : ""}</span><span class="${tagClass}">${tagText}</span>`;
+          } else {
+            row.innerHTML = `<span>${r.itemName}</span><span class="tag">暂无消耗数据</span>`;
+          }
+          row.addEventListener("click", () => openEditEntry(r));
+          listEl.appendChild(row);
+          // 管理员能直接在这里看"这条记录被谁改过、什么时候",不用先点进编辑页
+          // 再点"历史版本"——跟保存时的覆盖提示是同一个目的,让"是不是有人顶掉了
+          // 别人的记录"这件事一眼就能查,不用靠记忆或者去问。
+          if (isAdmin()) appendInlineHistoryToggle(listEl, r);
+        });
+      }
     });
     const totalRow = document.createElement("div");
     totalRow.className = "item-line";
