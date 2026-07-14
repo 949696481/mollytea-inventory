@@ -98,6 +98,32 @@
     color: var(--ink-dim);
     line-height: 1.4;
   }
+  .option .hint details {
+    margin-top: 6px;
+  }
+  .option .hint summary {
+    cursor: pointer;
+    color: var(--gold-dark);
+    font-weight: 700;
+    list-style: none;
+  }
+  .option .hint summary::-webkit-details-marker { display: none; }
+  .option .hint summary::before {
+    content: "▸ ";
+  }
+  .option .hint details[open] summary::before {
+    content: "▾ ";
+  }
+  .option .hint ol {
+    margin: 8px 0 0;
+    padding-left: 18px;
+  }
+  .option .hint li {
+    margin-bottom: 6px;
+  }
+  .option .hint li:last-child {
+    margin-bottom: 0;
+  }
 </style>
 </head>
 <body>
@@ -121,6 +147,17 @@
         <div class="icon">🖥️</div>
         <h2>下载 Windows 版</h2>
         <a class="cta" href="https://github.com/949696481/mollytea-inventory/releases/latest/download/InventoryApp-Windows.exe">下载 →</a>
+        <p class="hint">
+          看到"不安全"或"病毒"提示是正常的，软件没有购买付费签名证书，不是真的有病毒。
+          <details>
+            <summary>遇到提示怎么办？</summary>
+            <ol>
+              <li>浏览器下方出现"不常用的下载"提示 → 点旁边的"..." 选"保留"（或"仍要下载"）</li>
+              <li>双击打开时出现"Windows 已保护你的电脑" → 点左下角"更多信息" → 再点"仍要运行"</li>
+              <li>如果文件下载后又不见了（被杀毒软件删除）→ 打开"Windows 安全中心" → "病毒和威胁防护" → "保护历史记录"，找到被隔离的文件点"还原"；再进"病毒和威胁防护设置" → "排除项"，把下载文件夹加进去，然后重新下载一次</li>
+            </ol>
+          </details>
+        </p>
       </div>
     </div>
   </div>
