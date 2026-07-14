@@ -1779,11 +1779,14 @@ async function deleteDayByEditor(editedBy, count) {
 }
 
 // 管理员专用:在"某天详情"里每个人(一个编辑分组)的板块最下面加一个
-// "查看编辑历史"的小开关,点开才(懒加载,只查一次)去查这个人这一批记录里
-// 每个物品被谁改过、什么时候、改成了什么——复用编辑面板里"历史版本"用的
-// 同一个后端接口,按物品并发查(Promise.all,不是排队一个个查)再合并成一份
-// 按时间倒序的列表。原来是每个物品各自一个"查看编辑历史",物品一多屏幕上
-// 全是重复的按钮;现在一个人只用点一次就能看到他当天动过的所有物品。
+// "查看编辑历史"的小开关,点开才(懒加载,只查一次)去查这个人这一天实际
+// 存过的每一条——包括还留着的当前值和后来被覆盖掉的旧版本,按 editedBy 查,
+// 不是按"这个物品现在归谁"查:一个物品如果后来被别人重新存过,这个人当初
+// 存的那条照样要出现在他自己的记录里,不能因为"现在不是最新的了"就从他的
+// 历史里消失(2026-07-14 用真实数据测试时发现,按物品分别查历史只会显示
+// "现在这个值之前长什么样",经常查出来的是别人的旧版本,不是这个人自己
+// 存过的东西)。原来是每个物品各自一个"查看编辑历史",物品一多屏幕上全是
+// 重复的按钮;现在一个人只用点一次就能看到他这一天做过的所有事。
 function appendGroupHistoryToggle(listEl, group) {
   const wrap = document.createElement("div");
   wrap.style.cssText = "margin:6px 0 4px;";
@@ -1801,18 +1804,10 @@ function appendGroupHistoryToggle(listEl, group) {
     loaded = true;
     list.innerHTML = `<div class="hint">加载中…</div>`;
     try {
-      const perItem = await Promise.all(group.rows.map(r =>
-        apiGet("getEntryHistory", { categoryId: currentCategory.id, itemId: r.itemId, date: r.date })
-          .then(res => ({ itemName: r.itemName, history: res.history }))
-      ));
-      const flat = [];
-      perItem.forEach(({ itemName, history }) => {
-        history.forEach(h => flat.push(Object.assign({ itemName: itemName }, h)));
-      });
-      if (!flat.length) { list.innerHTML = `<div class="hint">这天没有被改过的记录</div>`; return; }
-      flat.sort((a, b) => new Date(b.editedAt) - new Date(a.editedAt));
+      const { entries } = await apiGet("getDayHistoryByEditor", { categoryId: currentCategory.id, date: currentDayDetailDate, editedBy: group.editor });
+      if (!entries.length) { list.innerHTML = `<div class="hint">这天没有记录</div>`; return; }
       list.innerHTML = "";
-      flat.forEach(h => {
+      entries.forEach(h => {
         const timeLabel = h.editedAt ? new Date(h.editedAt).toLocaleString("zh-CN", { hour12: false }) : "";
         const fieldSummary = fields.map(f => {
           const v = h.values && h.values[f.id];
@@ -1820,7 +1815,7 @@ function appendGroupHistoryToggle(listEl, group) {
         }).filter(Boolean).join(" · ");
         const item = document.createElement("div");
         item.style.cssText = "font-size:11px;color:var(--ink-dim);padding:2px 0;";
-        item.textContent = `${h.itemName} · ${h.editedBy || "未知"} · ${timeLabel} · ${fieldSummary || "(空)"}`;
+        item.textContent = `${h.itemName} · ${timeLabel}${h.current ? " · 当前" : " · 已被覆盖"} · ${fieldSummary || "(空)"}`;
         list.appendChild(item);
       });
     } catch (err) {

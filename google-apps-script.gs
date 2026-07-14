@@ -844,6 +844,49 @@ function getEntryHistory(categoryId, itemId, date) {
   return out;
 }
 
+// "这个人今天实际存过的每一条"——跟 getEntryHistory(按物品查"这条记录被谁
+// 改过")不一样:这个是按人查"这个人今天动过哪些物品",包含他存的当前值
+// (还留在 log 表里)和被后来别人/自己覆盖掉的旧版本(history 表)。用途是
+// 每人一个"查看编辑历史"按钮点开后要看到的是"这个人自己今天做了什么",
+// 不是"这个物品现在这个值之前长什么样"——一个物品如果后来被别人重新存过,
+// 这个人当初存的那条应该照样出现在他自己的记录里,不能因为"现在不是最新的
+// 了"就从他的历史里消失。
+function getDayHistoryByEditor(categoryId, date, editedBy) {
+  const out = [];
+  const logRows = getOrCreateSheet(logSheetName(categoryId), LOG_HEADERS).getDataRange().getValues();
+  for (let i = 1; i < logRows.length; i++) {
+    if (!logRows[i][1]) continue;
+    if (!isSameDate(logRows[i][0], date)) continue;
+    if (String(logRows[i][7] || "") !== String(editedBy || "")) continue;
+    out.push({
+      itemId: logRows[i][1], itemName: logRows[i][2],
+      values: parseValues(logRows[i][3]),
+      usage: logRows[i][4] === "" ? null : Number(logRows[i][4]),
+      cost: logRows[i][5] === "" ? null : Number(logRows[i][5]),
+      editedAt: logRows[i][6] || null,
+      editedBy: logRows[i][7] || null,
+      current: true,
+    });
+  }
+  const historyRows = getOrCreateSheet(historySheetName(categoryId), HISTORY_HEADERS).getDataRange().getValues();
+  for (let i = 1; i < historyRows.length; i++) {
+    if (!historyRows[i][1]) continue;
+    if (!isSameDate(historyRows[i][0], date)) continue;
+    if (String(historyRows[i][7] || "") !== String(editedBy || "")) continue;
+    out.push({
+      itemId: historyRows[i][1], itemName: historyRows[i][2],
+      values: parseValues(historyRows[i][3]),
+      usage: historyRows[i][4] === "" ? null : Number(historyRows[i][4]),
+      cost: historyRows[i][5] === "" ? null : Number(historyRows[i][5]),
+      editedAt: historyRows[i][6] || null,
+      editedBy: historyRows[i][7] || null,
+      current: false,
+    });
+  }
+  out.sort(function (a, b) { return new Date(b.editedAt) - new Date(a.editedAt); });
+  return out;
+}
+
 // 删掉一批日志行之后,要把它们各自当初对 total_stock 的影响"退回去"——而
 // 不是从剩下的记录里重新扫一遍最新的"真实盘点"当新总库存(那样会把"进货
 // 单独累加""起始库存"这些根本不是来自某一次盘点的贡献一起弄丢:一个物品
@@ -966,6 +1009,7 @@ function doGet(e) {
     if (action === "listItems") return jsonResponse(getItemsWithLatestStockCheck(p.categoryId));
     if (action === "getLog") return jsonResponse({ log: getRecentLog(p.categoryId, parseInt(p.days || "30", 10)) });
     if (action === "getEntryHistory") return jsonResponse({ history: getEntryHistory(p.categoryId, p.itemId, p.date) });
+    if (action === "getDayHistoryByEditor") return jsonResponse({ entries: getDayHistoryByEditor(p.categoryId, p.date, p.editedBy) });
     if (action === "getExchangeRates") return jsonResponse(getExchangeRates(p.base));
     if (action === "listUsers") { requireAdmin(session); return jsonResponse({ users: listUsers() }); }
     return jsonResponse({ error: "unknown action" });
