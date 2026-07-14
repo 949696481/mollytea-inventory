@@ -626,8 +626,10 @@ function findPreviousStockCheck(rows, itemId, date, stockFieldId) {
   // 用 formatDate 的字符串比较,不用 new Date(...).getTime() 比较——后者对"日期字符串"
   // 和"表格里已存的 Date 单元格"解析时区不一致(见 formatDate 注释),会导致跨时区时
   // 边界日期判断错误。"YYYY-MM-DD" 字符串本身按字典序比较就等价于按时间先后比较。
+  // 返回 {dateStr, value},不只是 value——调用方要拿这个日期去算"这次真正盘点
+  // 之后、这次盘点之前"漏了多少天单独录的进货(见 sumIncomingBetween)。
   const targetDateStr = formatDate(date);
-  let bestDateStr = null, bestVal = null;
+  let best = null;
   for (let i = 1; i < rows.length; i++) {
     if (String(rows[i][1]) !== String(itemId)) continue;
     const rDateStr = formatDate(rows[i][0]);
@@ -635,9 +637,45 @@ function findPreviousStockCheck(rows, itemId, date, stockFieldId) {
     const values = parseValues(rows[i][3]);
     const v = values[stockFieldId];
     if (v === undefined || v === null || v === "") continue;
-    if (bestDateStr === null || rDateStr > bestDateStr) { bestDateStr = rDateStr; bestVal = Number(v); }
+    if (best === null || rDateStr > best.dateStr) best = { dateStr: rDateStr, value: Number(v) };
   }
-  return bestVal;
+  return best;
+}
+
+// 上一次真正盘点(prevCheck.dateStr)严格早于、这次盘点严格早于 targetDateStr 的
+// 所有单独进货行(只填了进货没跟着盘点的那种)加总——这样即使进货跟盘点没在
+// 同一天录,消耗算出来也不会漏掉中间那几天的进货。上下界都不含,因为"上一次
+// 盘点当天"和"这次盘点当天"各自的进货已经在调用方的 usage 公式里单独算过一次
+// 了,这里再算就是重复计入。
+function sumIncomingBetween(rows, itemId, afterDateStr, beforeDateStrExclusive, incFieldId) {
+  if (!incFieldId) return 0;
+  let sum = 0;
+  for (let i = 1; i < rows.length; i++) {
+    if (String(rows[i][1]) !== String(itemId)) continue;
+    const rDateStr = formatDate(rows[i][0]);
+    if (afterDateStr !== null && rDateStr <= afterDateStr) continue;
+    if (rDateStr >= beforeDateStrExclusive) continue;
+    const values = parseValues(rows[i][3]);
+    const v = values[incFieldId];
+    if (v === undefined || v === null || v === "" || isNaN(Number(v))) continue;
+    sum += Number(v);
+  }
+  return sum;
+}
+
+// 如果这条记录(这个物品、这一天)之前已经存过一次、当时是"只填了进货没填
+// 盘点"的状态,那次保存已经把这个进货量加进过总库存了(见 logEntries 里
+// onlyIncoming 分支)。这次编辑重新计算基准/总库存前,必须先把那次的贡献减
+// 掉,不然同一笔进货会被算两次——不管是"这次编辑改了进货数字"还是"这次编辑
+// 补上了盘点值",都得先退回这一步。existingValues 在没有既有记录时是 {},
+// 这时天然返回 0,调用方不用额外判断 existingRowIndex。
+function priorIncomingOnlyBump(existingValues, incFieldId, stockFieldId) {
+  const oldStockRaw = existingValues[stockFieldId];
+  const oldHadStock = !(oldStockRaw === undefined || oldStockRaw === null || oldStockRaw === "");
+  if (oldHadStock) return 0;
+  const oldIncomingRaw = incFieldId ? existingValues[incFieldId] : null;
+  if (oldIncomingRaw === undefined || oldIncomingRaw === null || oldIncomingRaw === "" || isNaN(Number(oldIncomingRaw))) return 0;
+  return Number(oldIncomingRaw);
 }
 
 function logEntries(categoryId, date, entries, editedBy, confirmOverwrite) {
@@ -697,34 +735,55 @@ function logEntries(categoryId, date, entries, editedBy, confirmOverwrite) {
     if (stockFieldId) {
       const stockValRaw = merged[stockFieldId];
       const stockVal = (stockValRaw === undefined || stockValRaw === null || stockValRaw === "") ? null : Number(stockValRaw);
+      const incomingRaw = incFieldId ? merged[incFieldId] : null;
+      const hasIncoming = !(incomingRaw === undefined || incomingRaw === null || incomingRaw === "") && !isNaN(Number(incomingRaw));
+      const incomingVal = hasIncoming ? Number(incomingRaw) : 0;
+      const itemRowIdx = itemRowIndexById[String(itemId)];
+      // 只有这条记录是这个物品目前"最新"的一条(日期不早于其它所有记录),才
+      // 允许它推进 total_stock——补录/编辑更早的历史日期不该覆盖"现在"的
+      // 总库存,那个数字永远该反映"最近一次真实变化",不是"最近一次被编辑的"。
+      const targetDateStr = formatDate(date);
+      const isLatestForItem = !rows.some(function (r, idx) {
+        return idx > 0 && idx !== existingRowIndex && String(r[1]) === String(itemId) && formatDate(r[0]) > targetDateStr;
+      });
       if (stockVal !== null && !isNaN(stockVal)) {
-        // 基准优先按日期链找"上一次真正的盘点记录"——补录/编辑更早的历史日期
-        // 靠这个保证消耗数字用的是"那天当时"的上下文,不会被今天的总库存带偏。
-        // 真的一条历史记录都没有(全新物品的第一次盘点),才退回去用物品自己的
-        // total_stock 字段当基准——这就是起始库存生效的地方。
-        let prevStock = findPreviousStockCheck(rows, itemId, date, stockFieldId);
-        const itemRowIdx = itemRowIndexById[String(itemId)];
-        if (prevStock === null && itemRowIdx !== undefined) {
+        // 基准 = 上一次真正盘点的值 + 那次盘点之后、这次盘点之前(都不含)
+        // 单独录入的所有进货累加——这样即使某天只录了进货没顺手盘点,后面
+        // 真正盘点时也不会漏算那笔进货。日期链扫描不受"这条记录是不是编辑
+        // 已有的一天"影响,天然对重复编辑安全,不会重复计入。
+        const prevCheck = findPreviousStockCheck(rows, itemId, date, stockFieldId);
+        let prevStock = null;
+        if (prevCheck !== null) {
+          prevStock = prevCheck.value + sumIncomingBetween(rows, itemId, prevCheck.dateStr, targetDateStr, incFieldId);
+        } else if (itemRowIdx !== undefined) {
+          // 真的一条历史盘点记录都没有(全新物品的第一次盘点):退回去用物品
+          // 自己的 total_stock 字段当基准——这就是起始库存/纯进货累加生效的
+          // 地方。这个字段可能已经被之前"只填进货"的保存累加过,如果这次编辑
+          // 的正是那一天的记录,要先退回那次的贡献,不然会被重复计入一次。
           const rawTotal = itemRows[itemRowIdx][6];
-          if (rawTotal !== "" && rawTotal !== undefined && rawTotal !== null) prevStock = Number(rawTotal);
+          if (rawTotal !== "" && rawTotal !== undefined && rawTotal !== null) {
+            prevStock = Number(rawTotal) - priorIncomingOnlyBump(existingValues, incFieldId, stockFieldId);
+          }
         }
         if (prevStock !== null) {
-          const incomingRaw = incFieldId ? merged[incFieldId] : null;
-          const incomingVal = (incomingRaw === undefined || incomingRaw === null || incomingRaw === "") ? 0 : (Number(incomingRaw) || 0);
           usage = prevStock + incomingVal - stockVal;
           cost = usage * (Number(entry.price) || 0);
         }
-        // 只有这条记录是这个物品目前"最新"的盘点(日期不早于其它所有记录),才
-        // 把新数值推进 total_stock——补录/编辑更早的历史日期不该覆盖"现在"的
-        // 总库存,那个数字永远该反映"最近一次真实盘点",不是"最近一次被编辑的"。
-        const targetDateStr = formatDate(date);
-        const isLatestForItem = !rows.some(function (r, idx) {
-          return idx > 0 && idx !== existingRowIndex && String(r[1]) === String(itemId) && formatDate(r[0]) > targetDateStr;
-        });
         if (isLatestForItem && itemRowIdx !== undefined) {
           itemsSheet.getRange(itemRowIdx + 1, 7).setValue(stockVal);
           itemRows[itemRowIdx][6] = stockVal; // 保持内存副本同步,防止同一批里同个物品出现两次时读到旧值
         }
+      } else if (hasIncoming && incomingVal !== 0 && isLatestForItem && itemRowIdx !== undefined) {
+        // 只填了进货、没填盘点:这天没法算消耗(缺实际盘点数),但进货是确定
+        // 发生的事实,不用等哪天顺手一起盘点才生效——直接累加进现有总库存,
+        // 免得"我明明填了进货,总库存却没变"(2026-07-13 Kevin 报的 bug)。
+        // 先退回"这一天"自己之前可能已经算过一次的进货贡献(编辑同一天的进货
+        // 数字时),再加这次的新值,避免同一笔进货被重复累加。
+        const rawTotal = itemRows[itemRowIdx][6];
+        const currentTotal = (rawTotal === "" || rawTotal === undefined || rawTotal === null) ? 0 : Number(rawTotal);
+        const newTotal = currentTotal - priorIncomingOnlyBump(existingValues, incFieldId, stockFieldId) + incomingVal;
+        itemsSheet.getRange(itemRowIdx + 1, 7).setValue(newTotal);
+        itemRows[itemRowIdx][6] = newTotal;
       }
     }
 

@@ -1252,21 +1252,30 @@ function computeToday() {
   let count = 0;
   items.forEach(it => {
     const inputs = todayInputs[it.id] || {};
+    const hasAnyInput = Object.keys(inputs).some(k => inputs[k] !== undefined && inputs[k] !== "");
+    if (!hasAnyInput) return; // 这个物品今天什么都没填
+
     const stockValRaw = inputs[stockFieldId];
-    if (stockValRaw === undefined || stockValRaw === "") return; // 库存盘点是计算消耗的必填项
-    const stockVal = parseFloat(stockValRaw);
-    if (isNaN(stockVal)) return;
+    const hasStockVal = stockValRaw !== undefined && stockValRaw !== "" && !isNaN(parseFloat(stockValRaw));
+    const stockVal = hasStockVal ? parseFloat(stockValRaw) : null;
+    const incomingRaw = incomingFieldId ? inputs[incomingFieldId] : undefined;
+    const hasIncoming = incomingRaw !== undefined && incomingRaw !== "" && !isNaN(parseFloat(incomingRaw));
+    const incomingVal = hasIncoming ? parseFloat(incomingRaw) : 0;
     const prevVal = latestStockCheck[it.id];
-    let consumed = null, cost = null;
-    if (prevVal !== undefined) {
-      const incomingVal = incomingFieldId ? (parseFloat(inputs[incomingFieldId]) || 0) : 0;
+
+    let consumed = null, cost = null, onlyIncoming = false;
+    if (hasStockVal && prevVal !== undefined) {
       consumed = Number(prevVal) + incomingVal - stockVal;
       cost = consumed * Number(it.price);
       const converted = convertAmount(cost, it.currency);
       if (converted && converted.ok) totalConverted += converted.value;
       count++;
+    } else if (!hasStockVal && hasIncoming) {
+      // 只填了进货、没填库存盘点:这天算不出消耗,但进货量照样要保存并且
+      // 立刻加进总库存——不能因为没顺手盘点就把这行整个丢掉不存。
+      onlyIncoming = true;
     }
-    lines.push({ id: it.id, name: it.name, unit: it.unit, currency: it.currency, consumed, cost, values: inputs });
+    lines.push({ id: it.id, name: it.name, unit: it.unit, currency: it.currency, consumed, cost, values: inputs, onlyIncoming, incomingVal });
   });
 
   lastComputed = { date: todayStr(), lines };
@@ -1281,7 +1290,9 @@ function computeToday() {
   lines.forEach(l => {
     const div = document.createElement("div");
     div.className = "item-line";
-    if (l.consumed === null) {
+    if (l.onlyIncoming) {
+      div.innerHTML = `<span>${l.name} 进货 ${l.incomingVal}${l.unit}</span><span class="tag">已加入总库存·未填盘点,消耗待算</span>`;
+    } else if (l.consumed === null) {
       div.innerHTML = `<span>${l.name}</span><span class="tag">暂无昨天数据,已记录今天基准</span>`;
     } else if (l.consumed < 0) {
       div.innerHTML = `<span>${l.name}</span><span class="tag restock">看起来补货了</span>`;
