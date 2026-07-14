@@ -844,41 +844,84 @@ function getEntryHistory(categoryId, itemId, date) {
   return out;
 }
 
-// 删掉一个物品在某个分类里"当前"的日志之后,total_stock 要跟着退回"删除后
-// 还剩下的最新一条真实盘点"——不然总库存会停在一个已经被删掉的日子上,跟
-// "全部记录"里实际看到的历史对不上。一条记录都不剩了就清空(null),回到
-// "暂无记录"的状态,而不是继续显示已经不存在的那次盘点。
-function recomputeTotalStockForItem(categoryId, itemId, stockFieldId) {
-  const logSheet = getOrCreateSheet(logSheetName(categoryId), LOG_HEADERS);
-  const rows = logSheet.getDataRange().getValues();
-  let bestDateStr = null, bestVal = null;
-  for (let i = 1; i < rows.length; i++) {
-    if (String(rows[i][1]) !== String(itemId)) continue;
-    const values = parseValues(rows[i][3]);
-    const v = values[stockFieldId];
-    if (v === undefined || v === null || v === "") continue;
-    const dStr = formatDate(rows[i][0]);
-    if (bestDateStr === null || dStr > bestDateStr) { bestDateStr = dStr; bestVal = Number(v); }
+// 删掉一批日志行之后,要把它们各自当初对 total_stock 的影响"退回去"——而
+// 不是从剩下的记录里重新扫一遍最新的"真实盘点"当新总库存(那样会把"进货
+// 单独累加""起始库存"这些根本不是来自某一次盘点的贡献一起弄丢:一个物品
+// 如果这次被删的是它唯一的一条记录,而那条记录当初是"只填了进货"或者靠
+// 起始库存打的底,重新扫描会一条真实盘点都找不到,把总库存直接清空——这就
+// 是 2026-07-13 Kevin 报的"填完进货、删掉当天,总库存整个没了")。
+// 按物品分组、一次性批量读写 items/log 表,跟 logEntries 里的批量读写模式
+// 保持一致,避免删一整天(可能牵涉多个物品)时逐个物品重新读整张表拖慢。
+function undoDeletedRowsStockContribution(categoryId, deletedRows) {
+  if (deletedRows.length === 0) return;
+  const stockFieldId = stockCheckFieldId(categoryId);
+  if (!stockFieldId) return;
+  const incFieldId = incomingFieldId(categoryId);
+  const logRows = getOrCreateSheet(logSheetName(categoryId), LOG_HEADERS).getDataRange().getValues();
+  const itemsSheet = getOrCreateSheet(itemsSheetName(categoryId), ITEMS_HEADERS);
+  const itemRows = itemsSheet.getDataRange().getValues();
+  const itemRowIndexById = {};
+  for (let i = 1; i < itemRows.length; i++) {
+    if (itemRows[i][0]) itemRowIndexById[String(itemRows[i][0])] = i;
   }
-  setTotalStock(categoryId, itemId, bestVal === null ? "" : bestVal);
+
+  deletedRows.forEach(function (deletedRow) {
+    const itemId = deletedRow[1];
+    const itemRowIdx = itemRowIndexById[String(itemId)];
+    if (itemRowIdx === undefined) return; // 物品本身也被删了,不用管
+
+    // 被删的这行如果不是这个物品"当时最新"的一条(后面还有更晚日期的记录),
+    // 它早就不是"现在总库存"的来源了,删它对现在的总库存没有任何影响。
+    const deletedDateStr = formatDate(deletedRow[0]);
+    const hasLaterRow = logRows.some(function (r) {
+      return String(r[1]) === String(itemId) && formatDate(r[0]) > deletedDateStr;
+    });
+    if (hasLaterRow) return;
+
+    const values = parseValues(deletedRow[3]);
+    const stockValRaw = values[stockFieldId];
+    const hasStockVal = !(stockValRaw === undefined || stockValRaw === null || stockValRaw === "");
+    const incomingRaw = incFieldId ? values[incFieldId] : null;
+    const hasIncoming = !(incomingRaw === undefined || incomingRaw === null || incomingRaw === "") && !isNaN(Number(incomingRaw));
+    const incomingVal = hasIncoming ? Number(incomingRaw) : 0;
+    const usageRaw = deletedRow[4];
+
+    let newTotal;
+    if (hasStockVal) {
+      // 这行当初是真盘点,把总库存直接推成了 stockVal——用它存的 usage 反推
+      // 回当初用的基准(usage = prevStock + incomingVal - stockVal)。当初这
+      // 行根本没算出消耗(全新物品的第一次盘点,没有基准可退),删掉后就是
+      // "还没盘点过"的状态,退回空,而不是留着一个来源不明的数字。
+      newTotal = (usageRaw === "" || usageRaw === undefined || usageRaw === null)
+        ? ""
+        : Number(usageRaw) + Number(stockValRaw) - incomingVal;
+    } else if (hasIncoming && incomingVal !== 0) {
+      // 这行当初是只填了进货,把总库存加了 incomingVal——原样减回去。
+      const currentTotalRaw = itemRows[itemRowIdx][6];
+      const currentTotal = (currentTotalRaw === "" || currentTotalRaw === undefined || currentTotalRaw === null) ? null : Number(currentTotalRaw);
+      if (currentTotal === null) return; // 没有可退的基准,保持原样
+      newTotal = currentTotal - incomingVal;
+    } else {
+      return; // 这行既没盘点也没进货,本来就没影响过总库存
+    }
+    itemsSheet.getRange(itemRowIdx + 1, 7).setValue(newTotal);
+    itemRows[itemRowIdx][6] = newTotal; // 保持内存副本同步,防止同一批里同个物品被处理两次时读到旧值
+  });
 }
 
 function deleteLogDay(categoryId, date) {
   const sheet = getOrCreateSheet(logSheetName(categoryId), LOG_HEADERS);
   const historySheet = getOrCreateSheet(historySheetName(categoryId), HISTORY_HEADERS);
   const rows = sheet.getDataRange().getValues();
-  const affectedItemIds = [];
+  const deletedRows = [];
   for (let i = rows.length - 1; i >= 1; i--) {
     if (rows[i][1] && isSameDate(rows[i][0], date)) {
       historySheet.appendRow(rows[i]); // 删除前存一份快照,配合"历史版本"面板,删了也能找回
-      affectedItemIds.push(rows[i][1]);
+      deletedRows.push(rows[i]);
       sheet.deleteRow(i + 1);
     }
   }
-  const stockFieldId = stockCheckFieldId(categoryId);
-  if (stockFieldId) {
-    affectedItemIds.forEach(function (id) { recomputeTotalStockForItem(categoryId, id, stockFieldId); });
-  }
+  undoDeletedRowsStockContribution(categoryId, deletedRows);
 }
 
 // 只删某一天里"某个人"录入/最后编辑的那部分记录,别人当天录的不动——
@@ -887,18 +930,15 @@ function deleteLogDayByEditor(categoryId, date, editedBy) {
   const sheet = getOrCreateSheet(logSheetName(categoryId), LOG_HEADERS);
   const historySheet = getOrCreateSheet(historySheetName(categoryId), HISTORY_HEADERS);
   const rows = sheet.getDataRange().getValues();
-  const affectedItemIds = [];
+  const deletedRows = [];
   for (let i = rows.length - 1; i >= 1; i--) {
     if (rows[i][1] && isSameDate(rows[i][0], date) && String(rows[i][7] || "") === String(editedBy || "")) {
       historySheet.appendRow(rows[i]);
-      affectedItemIds.push(rows[i][1]);
+      deletedRows.push(rows[i]);
       sheet.deleteRow(i + 1);
     }
   }
-  const stockFieldId = stockCheckFieldId(categoryId);
-  if (stockFieldId) {
-    affectedItemIds.forEach(function (id) { recomputeTotalStockForItem(categoryId, id, stockFieldId); });
-  }
+  undoDeletedRowsStockContribution(categoryId, deletedRows);
 }
 
 // ---------- 汇率(服务器代理,浏览器 fetch 没法自定义 User-Agent) ----------
