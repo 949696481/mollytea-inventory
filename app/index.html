@@ -493,6 +493,9 @@
         <button class="btn-secondary" id="addFieldBtn" style="margin-top:8px;">添加字段</button>
         <div class="status-line" id="fieldFormStatus"></div>
       </div>
+      <div id="noteEntrySection" style="display:none;margin-bottom:14px;">
+        <div id="noteEntryFields"></div>
+      </div>
       <div id="entryTableWrap" style="overflow-x:auto;display:none;">
         <table class="entry-table" id="entryTable">
           <thead><tr id="entryTableHead"></tr></thead>
@@ -572,6 +575,14 @@
           <div class="hint" style="margin-top:4px;">填了这个,以后第一次真正盘点就能算出消耗;不填的话第一次盘点还是会显示"暂无消耗数据"</div>
         </div>
         <button class="btn-secondary" id="addItemBtn" style="margin-top:8px;">添加物品</button>
+
+        <div style="margin-top:20px;padding-top:16px;border-top:1px dashed var(--paper-dim);">
+          <div style="font-weight:700;margin-bottom:4px;">自定义条目</div>
+          <div class="hint" style="margin-bottom:8px;">跟物品无关、按天记录的自由文本,比如"当日营业额"或者"应到货/实际缺"备注</div>
+          <div id="currentNoteFieldsList"></div>
+          <input id="newNoteFieldName" placeholder="名称,如 当日营业额" style="width:100%;padding:10px 12px;border-radius:10px;border:1.5px solid var(--paper-dim);font-size:13px;margin-top:4px;">
+          <button class="btn-secondary" id="addNoteFieldBtn" style="margin-top:8px;">添加自定义条目</button>
+        </div>
       </div>
     </div>
 
@@ -634,17 +645,24 @@ let stockFieldId = null;      // fields 里 role==="stock_check" 的那个字段
 let incomingFieldId = null;   // fields 里 role==="incoming" 的那个字段 id(可能没有)
 let latestStockCheck = {};    // {itemId: 最新一次库存盘点数值}
 let todayInputs = {};         // {itemId: {fieldId: value}}
+let noteFields = [];          // 这个分类配置的自定义日级条目 [{id,name,order}],跟物品无关,一天一份自由文本
+let noteLogByDate = {};       // {dateStr: [{noteId, value, editedAt, editedBy}]}
 let lastComputed = null;
 let manageMode = false;
 let manageFieldsMode = false;
 let editingEntry = null;      // {date, itemId, itemName} 正在编辑的历史记录
 let editingIsQuickStockOverride = false; // true = 从"目前总库存"磁贴点进来的,保存要走 setTotalStock 而不是 saveLogEntries
+let editingIsNoteEntry = false; // true = 正在编辑一个自定义条目的值,保存要走 saveNoteEntries
 let settlementCurrency = "CNY"; // 这个分类当前选的结算货币
 let exchangeRates = null;      // {date, rates:{USD:0.14,...}} 1 结算货币 = rates[X] 个 X
 let ratesError = "";           // 汇率拉取失败时的提示
 let currentUser = null;        // {id, username, displayName, role, storeId, storeName?}
 let authToken = null;          // 登录后端发的 session token,每次请求都要带上
 const isAdmin = () => !!currentUser && currentUser.role === "admin";
+// 跟后端存 edited_by 时用的值保持一致(session.display_name || session.username,
+// 见 google-apps-script.gs 的 saveLogEntries/saveNoteEntries 分支)——用来判断
+// "某一天某个人的记录"是不是当前登录的这个人自己的,决定要不要显示删除按钮。
+const myEditorName = () => !!currentUser && (currentUser.displayName || currentUser.username);
 
 // ---------- 后端调用(text/plain 发 POST 是为了躲开 CORS 预检,跟 google-apps-script.gs 的注释对应) ----------
 const SESSION_KEY = "inv_session_v1";
@@ -993,18 +1011,22 @@ async function selectCategory(cat) {
   const calendarGrid = document.getElementById("calendarGrid");
   calendarGrid.innerHTML = `<div class="empty" style="grid-column:1/-1;">加载中…</div>`;
 
-  // 四个请求同时发出去,不再一个个排队等——每个请求都要真的连一次 Google
-  // Apps Script,顺序等的话延迟是四个加起来,并发之后只等最慢的那一个。
+  // 六个请求同时发出去,不再一个个排队等——每个请求都要真的连一次 Google
+  // Apps Script,顺序等的话延迟是六个加起来,并发之后只等最慢的那一个。
   // 拿到数据以后再按"字段 -> 物品 -> 结算货币 -> 历史记录"这个依赖顺序渲染
   // (物品表格要用到字段列表,历史记录金额换算要用到结算货币)。
-  const [fieldsResult, itemsResult, currencyResult, logResult] = await Promise.allSettled([
+  const [fieldsResult, itemsResult, currencyResult, logResult, noteFieldsResult, noteLogResult] = await Promise.allSettled([
     fetchFields(cat.id),
     fetchItemsAndStock(cat.id),
     fetchSettlementCurrency(cat.id),
     fetchLog(cat.id, ALL_HISTORY_DAYS),
+    fetchNoteFields(cat.id),
+    fetchNoteLog(cat.id, ALL_HISTORY_DAYS),
   ]);
 
   applyFields(fieldsResult.status === "fulfilled" ? fieldsResult.value : []);
+  applyNoteFields(noteFieldsResult.status === "fulfilled" ? noteFieldsResult.value : []);
+  applyNoteLog(noteLogResult.status === "fulfilled" ? noteLogResult.value : []);
 
   if (itemsResult.status === "fulfilled") {
     applyItemsAndStock(itemsResult.value);
@@ -1187,6 +1209,96 @@ document.getElementById("addFieldBtn").addEventListener("click", async () => {
   }
 });
 
+// ---------- 自定义日级条目(跟物品无关,一天一份自由文本,比如"当日营业额"/
+// "应到货备注")。管理入口在"物品设置"卡片里,渲染在"今天的记录"表格上方。----------
+async function fetchNoteFields(categoryId) {
+  return (await apiGet("listNoteFields", { categoryId })).noteFields;
+}
+
+function applyNoteFields(newNoteFields) {
+  noteFields = newNoteFields;
+  renderNoteFieldsManageList();
+  renderNoteEntrySection();
+}
+
+async function loadNoteFields() {
+  applyNoteFields(await fetchNoteFields(currentCategory.id));
+}
+
+async function fetchNoteLog(categoryId, days) {
+  return (await apiGet("getNoteLog", { categoryId, days })).noteLog;
+}
+
+function applyNoteLog(rows) {
+  noteLogByDate = {};
+  (rows || []).forEach(r => {
+    (noteLogByDate[r.date] = noteLogByDate[r.date] || []).push(r);
+  });
+  renderNoteEntrySection(); // 拿到数据后重新渲染,把"今天已经存过的值"预填进输入框
+}
+
+async function loadNoteLog() {
+  applyNoteLog(await fetchNoteLog(currentCategory.id, ALL_HISTORY_DAYS));
+}
+
+function renderNoteFieldsManageList() {
+  const el = document.getElementById("currentNoteFieldsList");
+  el.innerHTML = "";
+  noteFields.forEach(f => {
+    const div = document.createElement("div");
+    div.className = "row";
+    div.innerHTML = `<div class="name">${f.name}</div><button class="btn-ghost" data-action="del">删除</button>`;
+    div.querySelector('[data-action="del"]').addEventListener("click", () => deleteNoteFieldHandler(f.id));
+    el.appendChild(div);
+  });
+}
+
+async function deleteNoteFieldHandler(noteId) {
+  if (!confirm("删除这个自定义条目?已经记录的历史值不会再显示,但不会真的清掉。")) return;
+  await apiPost("deleteNoteField", { categoryId: currentCategory.id, noteId });
+  await loadNoteFields();
+}
+
+document.getElementById("addNoteFieldBtn").addEventListener("click", async () => {
+  const input = document.getElementById("newNoteFieldName");
+  const name = input.value.trim();
+  if (!name) return;
+  await apiPost("addNoteField", { categoryId: currentCategory.id, name });
+  input.value = "";
+  await loadNoteFields();
+});
+
+// 渲染"今天的记录"表格上方的自定义条目输入框——今天已经存过的值会预填进去,
+// 跟物品表格一起保存(见 saveNoteEntriesIfAny,由 saveToday/saveDirectly 调用)。
+function renderNoteEntrySection() {
+  const section = document.getElementById("noteEntrySection");
+  const container = document.getElementById("noteEntryFields");
+  if (noteFields.length === 0) { section.style.display = "none"; return; }
+  section.style.display = "block";
+  container.innerHTML = "";
+  const todayRows = noteLogByDate[todayStr()] || [];
+  noteFields.forEach(f => {
+    const existing = todayRows.find(r => String(r.noteId) === String(f.id));
+    const label = document.createElement("label");
+    label.style.cssText = "display:block;margin-bottom:8px;";
+    label.innerHTML = `${f.name}<input type="text" data-note="${f.id}" value="${existing ? existing.value : ""}" style="width:100%;padding:10px 12px;border-radius:10px;border:1.5px solid var(--paper-dim);font-size:13px;margin-top:4px;">`;
+    container.appendChild(label);
+  });
+}
+
+function collectNoteValues() {
+  const values = {};
+  document.querySelectorAll("#noteEntryFields input").forEach(inp => {
+    values[inp.dataset.note] = inp.value;
+  });
+  return values;
+}
+
+async function saveNoteEntriesIfAny(date) {
+  if (noteFields.length === 0) return;
+  await apiPost("saveNoteEntries", { categoryId: currentCategory.id, date, values: collectNoteValues() });
+}
+
 // ---------- 分类详情:今日录入(字段是动态的,由这个分类自己配置)
 // 表格布局:字段名在最上面一行当表头,下面一行一个物品,类似 Excel。----------
 function renderItemRows() {
@@ -1330,11 +1442,12 @@ async function saveToday() {
     }));
     const result = await saveLogEntriesWithConfirm({ categoryId: currentCategory.id, date: lastComputed.date, entries });
     if (!result) { statusEl.className = "status-line"; statusEl.textContent = "已取消"; return; }
+    await saveNoteEntriesIfAny(lastComputed.date);
     statusEl.className = "status-line ok";
     statusEl.textContent = "已保存 ✓";
     todayInputs = {};
     document.getElementById("resultCard").style.display = "none";
-    await Promise.all([loadItemsAndStock(), loadHistory()]); // 两个互不依赖,并发拉,不用排队等
+    await Promise.all([loadItemsAndStock(), loadHistory(), loadNoteLog()]); // 互不依赖,并发拉,不用排队等
   } catch (err) {
     statusEl.className = "status-line error";
     statusEl.textContent = "保存失败: " + err.message;
@@ -1346,18 +1459,25 @@ async function saveDirectly() {
   const entries = items
     .filter(it => todayInputs[it.id])
     .map(it => ({ itemId: it.id, itemName: it.name, values: todayInputs[it.id], price: it.price }));
-  if (entries.length === 0) {
+  const noteValues = collectNoteValues();
+  const hasAnyNote = Object.values(noteValues).some(v => v !== undefined && v !== null && v !== "");
+  // 物料类分类经常只填自定义条目("应到货/实际缺")、当天没有任何物品盘点——
+  // 不能因为物品表格是空的就整个拒绝保存,只有两边都没填才算"什么都没填"。
+  if (entries.length === 0 && !hasAnyNote) {
     statusEl.className = "status-line error"; statusEl.textContent = "还没有填写任何内容";
     return;
   }
   statusEl.className = "status-line"; statusEl.textContent = "保存中…";
   try {
-    const result = await saveLogEntriesWithConfirm({ categoryId: currentCategory.id, date: todayStr(), entries });
-    if (!result) { statusEl.className = "status-line"; statusEl.textContent = "已取消"; return; }
+    if (entries.length > 0) {
+      const result = await saveLogEntriesWithConfirm({ categoryId: currentCategory.id, date: todayStr(), entries });
+      if (!result) { statusEl.className = "status-line"; statusEl.textContent = "已取消"; return; }
+    }
+    await saveNoteEntriesIfAny(todayStr());
     statusEl.className = "status-line ok"; statusEl.textContent = "已保存 ✓";
     todayInputs = {};
     renderItemRows();
-    await Promise.all([loadItemsAndStock(), loadHistory()]); // 两个互不依赖,并发拉,不用排队等
+    await Promise.all([loadItemsAndStock(), loadHistory(), loadNoteLog()]); // 互不依赖,并发拉,不用排队等
   } catch (err) {
     statusEl.className = "status-line error"; statusEl.textContent = "保存失败: " + err.message;
   }
@@ -1438,6 +1558,7 @@ function editStockFor(item) {
   grid.appendChild(label);
   editingEntry = { date: todayStr(), itemId: item.id, itemName: item.name };
   editingIsQuickStockOverride = true;
+  editingIsNoteEntry = false;
   document.getElementById("editStatus").className = "status-line";
   document.getElementById("editStatus").textContent = "";
   document.getElementById("editEntryCard").style.display = "block";
@@ -1807,16 +1928,41 @@ function appendGroupHistoryToggle(listEl, group) {
       const { entries } = await apiGet("getDayHistoryByEditor", { categoryId: currentCategory.id, date: currentDayDetailDate, editedBy: group.editor });
       if (!entries.length) { list.innerHTML = `<div class="hint">这天没有记录</div>`; return; }
       list.innerHTML = "";
+      const title = document.createElement("div");
+      title.style.cssText = "font-weight:700;font-size:12px;margin-bottom:2px;";
+      title.textContent = "编辑历史";
+      list.appendChild(title);
+      // 按 editedAt 分组——同一次保存动作(可能同时存了好几个物品)是同一个
+      // 时间戳,算作一个"编辑事件"块,而不是每个物品各自一行。这样能清楚看出
+      // "这一版后来被覆盖了"还是"这就是当前值",不用逐条自己去对时间戳。
+      const byTime = [];
+      const groupByTime = {};
       entries.forEach(h => {
-        const timeLabel = h.editedAt ? new Date(h.editedAt).toLocaleString("zh-CN", { hour12: false }) : "";
-        const fieldSummary = fields.map(f => {
-          const v = h.values && h.values[f.id];
-          return (v !== undefined && v !== null && v !== "") ? `${f.name}:${v}` : null;
-        }).filter(Boolean).join(" · ");
-        const item = document.createElement("div");
-        item.style.cssText = "font-size:11px;color:var(--ink-dim);padding:2px 0;";
-        item.textContent = `${h.itemName} · ${timeLabel}${h.current ? " · 当前" : " · 已被覆盖"} · ${fieldSummary || "(空)"}`;
-        list.appendChild(item);
+        const key = h.editedAt || "";
+        if (!groupByTime[key]) {
+          groupByTime[key] = { editedAt: h.editedAt, rows: [] };
+          byTime.push(groupByTime[key]);
+        }
+        groupByTime[key].rows.push(h);
+      });
+      byTime.sort((a, b) => new Date(b.editedAt) - new Date(a.editedAt));
+      byTime.forEach(block => {
+        const timeLabel = block.editedAt ? new Date(block.editedAt).toLocaleString("zh-CN", { hour12: false }) : "未知时间";
+        const allOverwritten = block.rows.every(r => !r.current);
+        const head = document.createElement("div");
+        head.style.cssText = "font-size:12px;font-weight:600;color:var(--ink);margin-top:8px;";
+        head.textContent = `${group.editor || "未知"} ${timeLabel}` + (allOverwritten ? " （已被覆盖）" : "");
+        list.appendChild(head);
+        block.rows.forEach(h => {
+          const fieldSummary = fields.map(f => {
+            const v = h.values && h.values[f.id];
+            return (v !== undefined && v !== null && v !== "") ? `${f.name}:${v}` : null;
+          }).filter(Boolean).join(" · ");
+          const item = document.createElement("div");
+          item.style.cssText = "font-size:11px;color:var(--ink-dim);padding:1px 0 1px 4px;";
+          item.textContent = `${h.itemName} ${fieldSummary || "(空)"}`;
+          list.appendChild(item);
+        });
       });
     } catch (err) {
       list.innerHTML = `<div class="status-line error">加载失败: ${err.message}</div>`;
@@ -1834,9 +1980,29 @@ function openDayDetail(date, dayRows) {
   currentDayDetailDate = date;
   showView("day-detail");
   document.getElementById("dayDetailTitle").textContent = currentDayLabel;
-  document.getElementById("deleteDayBtn").style.display = (isAdmin() && dayRows.length > 0) ? "inline-block" : "none";
+  const dayNotes = noteLogByDate[date] || [];
+  document.getElementById("deleteDayBtn").style.display = (isAdmin() && (dayRows.length > 0 || dayNotes.length > 0)) ? "inline-block" : "none";
   const listEl = document.getElementById("dayDetailList");
   listEl.innerHTML = "";
+
+  // 自定义条目("当日营业额"/备注这类,跟物品无关)放在最前面,不管这天有没有
+  // 物品记录都显示——物料类分类经常只填了备注、当天没有任何物品盘点。
+  if (noteFields.length > 0) {
+    const notesHeader = document.createElement("div");
+    notesHeader.style.cssText = "font-weight:700;margin-bottom:8px;";
+    notesHeader.textContent = "当日备注";
+    listEl.appendChild(notesHeader);
+    noteFields.forEach(nf => {
+      const row = dayNotes.find(r => String(r.noteId) === String(nf.id));
+      const div = document.createElement("div");
+      div.className = "item-line history-row";
+      div.title = "点击编辑";
+      div.innerHTML = `<span>${nf.name}</span><span class="tag">${row ? row.value : "未填写"}</span>`;
+      div.addEventListener("click", () => openEditNoteEntry(date, nf, row ? row.value : ""));
+      listEl.appendChild(div);
+    });
+  }
+
   if (dayRows.length === 0) {
     const empty = document.createElement("div");
     empty.className = "empty";
@@ -1871,11 +2037,16 @@ function openDayDetail(date, dayRows) {
       label.style.cssText = "font-weight:700;color:var(--ink);";
       label.textContent = (group.editor || "未知") + (latestLabel ? ` 最后编辑于 ${latestLabel}` : "");
       header.appendChild(label);
-      if (showEditorHeaders && isAdmin()) {
+      // 谁能删这一组:admin 能删任何人的;员工(2026-07-15 开放)只能删自己那组
+      // ——不管当天是不是只有一个人录入,都该看到这个按钮,不该因为
+      // "只有一组"就完全不渲染(以前的条件是 showEditorHeaders && isAdmin(),
+      // 单人录入的天永远看不到删除入口)。
+      const canDeleteGroup = isAdmin() || group.editor === myEditorName();
+      if (canDeleteGroup) {
         const delBtn = document.createElement("button");
         delBtn.className = "btn-ghost";
         delBtn.style.cssText = "font-size:12px;padding:2px 8px;";
-        delBtn.textContent = "删除这部分";
+        delBtn.textContent = isAdmin() ? "删除这部分" : "删除我的记录";
         delBtn.addEventListener("click", () => deleteDayByEditor(group.editor, group.rows.length));
         header.appendChild(delBtn);
       }
@@ -1907,6 +2078,7 @@ function openDayDetail(date, dayRows) {
           const incomingVal = Number((r.values || {})[incomingFieldId]);
           const row = document.createElement("div");
           row.className = "item-line history-row";
+          row.title = "点击编辑";
           row.innerHTML = `<span>${r.itemName}</span><span class="tag">+${incomingVal}${it ? it.unit : ""}</span>`;
           row.addEventListener("click", () => openEditEntry(r));
           listEl.appendChild(row);
@@ -1922,6 +2094,7 @@ function openDayDetail(date, dayRows) {
           const it = items.find(x => x.id === r.itemId);
           const row = document.createElement("div");
           row.className = "item-line history-row";
+          row.title = "点击编辑";
           if (r.usage !== null && r.usage !== undefined) {
             const converted = convertAmount(r.cost, it ? it.currency : null);
             if (converted && converted.ok) dayTotal += converted.value;
@@ -1938,7 +2111,8 @@ function openDayDetail(date, dayRows) {
 
       // 每个人一个"查看编辑历史",放在这个人这一整块(进货+消耗)的最下面——
       // 不再每个物品各自一个,点开显示这个人当天动过的所有物品,不用一个个点开找。
-      if (isAdmin()) appendGroupHistoryToggle(listEl, group);
+      // admin 能看任何人的;员工能看自己的(方便核对自己到底改过什么)。
+      if (isAdmin() || group.editor === myEditorName()) appendGroupHistoryToggle(listEl, group);
     });
     const totalRow = document.createElement("div");
     totalRow.className = "item-line";
@@ -1985,11 +2159,34 @@ function openEditEntry(entry) {
   });
   editingEntry = { date: entry.date, itemId: entry.itemId, itemName: entry.itemName };
   editingIsQuickStockOverride = false;
+  editingIsNoteEntry = false;
   document.getElementById("editStatus").className = "status-line";
   document.getElementById("editStatus").textContent = "";
   document.getElementById("editEntryCard").style.display = "block";
   document.getElementById("editEntryCard").scrollIntoView({ behavior: "smooth", block: "start" });
   resetHistoryPanel();
+}
+
+// ---------- 编辑一个自定义条目的当天值(day-detail 里点"当日备注"那一行)——
+// 走 saveNoteEntries,不产生 usage/cost,也没有"历史版本"面板(那个是给物品
+// 记录用的,自定义条目暂时不需要那么复杂)。----------
+function openEditNoteEntry(date, noteField, currentValue) {
+  document.getElementById("editEntryHint").textContent = date;
+  const container = document.getElementById("editEntryFields");
+  container.innerHTML = `<div class="entry-item-name">${noteField.name}</div><div class="entry-fields" id="editFieldsGrid"></div>`;
+  const grid = document.getElementById("editFieldsGrid");
+  const label = document.createElement("label");
+  label.innerHTML = `${noteField.name}<input type="text" data-note="${noteField.id}" value="${currentValue || ""}">`;
+  grid.appendChild(label);
+  editingEntry = { date: date, noteId: noteField.id };
+  editingIsQuickStockOverride = false;
+  editingIsNoteEntry = true;
+  document.getElementById("editStatus").className = "status-line";
+  document.getElementById("editStatus").textContent = "";
+  document.getElementById("editEntryCard").style.display = "block";
+  document.getElementById("editEntryCard").scrollIntoView({ behavior: "smooth", block: "start" });
+  resetHistoryPanel();
+  document.getElementById("toggleHistoryVersionsBtn").style.display = "none";
 }
 
 // ---------- 编辑历史版本:改错了能退回去,不用只能靠记忆手动改回来 ----------
@@ -2056,7 +2253,13 @@ document.getElementById("saveEditBtn").addEventListener("click", async () => {
   const statusEl = document.getElementById("editStatus");
   statusEl.className = "status-line"; statusEl.textContent = "保存中…";
   try {
-    if (editingIsQuickStockOverride) {
+    if (editingIsNoteEntry) {
+      const inp = document.querySelector("#editFieldsGrid input");
+      await apiPost("saveNoteEntries", {
+        categoryId: currentCategory.id, date: editingEntry.date,
+        values: { [editingEntry.noteId]: inp ? inp.value : "" },
+      });
+    } else if (editingIsQuickStockOverride) {
       const inp = document.querySelector("#editFieldsGrid input");
       const raw = inp ? inp.value : "";
       await apiPost("setTotalStock", {
@@ -2079,9 +2282,17 @@ document.getElementById("saveEditBtn").addEventListener("click", async () => {
     statusEl.className = "status-line ok"; statusEl.textContent = "已保存修改 ✓";
     document.getElementById("editEntryCard").style.display = "none";
     const wasQuickOverride = editingIsQuickStockOverride;
+    const wasNoteEntry = editingIsNoteEntry;
+    const editedDate = editingEntry.date;
     editingEntry = null;
-    // 两个互不依赖,并发拉,不用排队等;总库存磁贴那条路径不用重新拉全部记录。
-    await Promise.all(wasQuickOverride ? [loadItemsAndStock()] : [loadItemsAndStock(), loadHistory()]);
+    editingIsNoteEntry = false;
+    // 三条互不依赖,按实际改的是哪种数据分别刷新,不用排队等。
+    if (wasNoteEntry) {
+      await loadNoteLog();
+      if (currentDayDetailDate === editedDate) openDayDetail(editedDate, historyRowsByDate[editedDate] || []);
+    } else {
+      await Promise.all(wasQuickOverride ? [loadItemsAndStock()] : [loadItemsAndStock(), loadHistory()]);
+    }
   } catch (err) {
     statusEl.className = "status-line error"; statusEl.textContent = "保存失败: " + err.message;
   }

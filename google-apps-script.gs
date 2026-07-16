@@ -46,6 +46,12 @@ const FIELDS_HEADERS = ["id", "name", "type", "role", "order"];
 const ITEMS_HEADERS = ["id", "name", "unit", "price", "currency", "locked", "total_stock"];
 const LOG_HEADERS = ["date", "item_id", "item_name", "values_json", "usage", "cost", "edited_at", "edited_by"];
 const HISTORY_HEADERS = ["date", "item_id", "item_name", "values_json", "usage", "cost", "edited_at", "edited_by"];
+// 自定义条目(2026-07-15 加):跟物品无关、一天一份的自由文本,比如"当日营业额"/
+// "应到货备注"。不需要 unit/type/role,只有名字——所以是三张独立的小表,不复用
+// FIELDS/ITEMS 那一套。
+const NOTE_FIELDS_HEADERS = ["id", "name", "order"];
+const NOTE_LOG_HEADERS = ["date", "note_id", "value", "edited_at", "edited_by"];
+const NOTE_HISTORY_HEADERS = ["date", "note_id", "value", "edited_at", "edited_by"];
 
 const DEFAULT_CURRENCY = "CNY";
 const SESSION_TTL_DAYS = 14;
@@ -67,6 +73,9 @@ function fieldsSheetName(categoryId) { return "fields_" + categoryId; }
 function itemsSheetName(categoryId) { return "items_" + categoryId; }
 function logSheetName(categoryId) { return "log_" + categoryId; }
 function historySheetName(categoryId) { return "history_" + categoryId; }
+function notesSheetName(categoryId) { return "notes_" + categoryId; }
+function notelogSheetName(categoryId) { return "notelog_" + categoryId; }
+function notehistorySheetName(categoryId) { return "notehistory_" + categoryId; }
 
 function jsonResponse(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
@@ -404,7 +413,8 @@ function deleteCategoryById(categoryId) {
   for (let i = rows.length - 1; i >= 1; i--) {
     if (String(rows[i][0]) === String(categoryId)) { sheet.deleteRow(i + 1); break; }
   }
-  [fieldsSheetName(categoryId), itemsSheetName(categoryId), logSheetName(categoryId), historySheetName(categoryId)].forEach(function (name) {
+  [fieldsSheetName(categoryId), itemsSheetName(categoryId), logSheetName(categoryId), historySheetName(categoryId),
+   notesSheetName(categoryId), notelogSheetName(categoryId), notehistorySheetName(categoryId)].forEach(function (name) {
     const s = ss.getSheetByName(name);
     if (s) ss.deleteSheet(s);
   });
@@ -678,6 +688,63 @@ function priorIncomingOnlyBump(existingValues, incFieldId, stockFieldId) {
   return Number(oldIncomingRaw);
 }
 
+// findPreviousStockCheck 的镜像版本:找"严格晚于" targetDateStr 的、日期最早的那个
+// 真实盘点行——editRow/deleteLogDay 改动了更早的一天之后,要用这个函数找出"下一次
+// 真实盘点"存的 usage/cost 是不是需要重算(见 recomputeForwardAfterChange)。
+function findNextStockCheck(rows, itemId, targetDateStr, stockFieldId) {
+  let best = null;
+  for (let i = 1; i < rows.length; i++) {
+    if (String(rows[i][1]) !== String(itemId)) continue;
+    const rDateStr = formatDate(rows[i][0]);
+    if (rDateStr <= targetDateStr) continue;
+    const values = parseValues(rows[i][3]);
+    const v = values[stockFieldId];
+    if (v === undefined || v === null || v === "") continue;
+    if (best === null || rDateStr < best.dateStr) best = { dateStr: rDateStr, rowIndex: i, value: Number(v) };
+  }
+  return best;
+}
+
+// 修复"编辑/删除一个更早的历史日期后,下一次真实盘点存的消耗数字变成基于一个
+// 已经不存在的基准算出来的错误值"这个 bug(2026-07-15 Kevin 提出的场景)——
+// total_stock 不受影响(它只在触碰"当前最新一天"时才更新),但 usage/cost 是保存
+// 那一刻算好就存死的,历史日期一变就该跟着重算,不然会一直显示错的消耗数字。
+// 只需要往前重算一步:下一次真实盘点的 stockVal 本身没变,只是它的计算基准
+// (prevStock)可能变了;再往后一行用的基准是"下一次真实盘点的 stockVal"本身,
+// 这个值没变,所以不需要继续级联下去。
+function recomputeForwardAfterChange(categoryId, itemId, changedDateStr) {
+  const stockFieldId = stockCheckFieldId(categoryId);
+  if (!stockFieldId) return;
+  const incFieldId = incomingFieldId(categoryId);
+  const logSheet = getOrCreateSheet(logSheetName(categoryId), LOG_HEADERS);
+  const rows = logSheet.getDataRange().getValues();
+  const next = findNextStockCheck(rows, itemId, changedDateStr, stockFieldId);
+  if (!next) return; // 这个物品在这之后没有真实盘点过,下次真正盘点会自然用上正确的链条
+
+  const prevCheck = findPreviousStockCheck(rows, itemId, next.dateStr, stockFieldId);
+  let usage = "", cost = "";
+  if (prevCheck !== null) {
+    // 特意不像 logEntries 那样在"找不到更早盘点"时退回去用物品的 total_stock
+    // 字段当基准——那个字段这时候早就被"下一次真实盘点"自己(或者更晚的其它
+    // 记录)写过了,已经不是"这次改动之前"的原始起始库存,拿它当 prevStock
+    // 就是拿这一行自己(或者跟它无关的更晚数据)当自己的基准,会算出一个看起来
+    // 正常、其实毫无意义的假消耗数字。删/改之后如果真的没有更早的真实盘点了,
+    // 老老实实退回"暂无消耗数据"(usage/cost 留空)——比编一个错的数字安全。
+    const prevStock = prevCheck.value + sumIncomingBetween(rows, itemId, prevCheck.dateStr, next.dateStr, incFieldId);
+    const values = parseValues(rows[next.rowIndex][3]);
+    const incomingRaw = incFieldId ? values[incFieldId] : null;
+    const hasIncoming = !(incomingRaw === undefined || incomingRaw === null || incomingRaw === "") && !isNaN(Number(incomingRaw));
+    const incomingVal = hasIncoming ? Number(incomingRaw) : 0;
+    usage = prevStock + incomingVal - next.value;
+    const itemRow = getItemRow(categoryId, itemId);
+    const price = itemRow ? (Number(itemRow.values[3]) || 0) : 0;
+    cost = usage * price;
+  }
+  // 不管算没算出来都要写回去(哪怕是清空)——万一这一行之前显示的是一个基于
+  // 已经不存在的基准算出来的旧数字,这次也要把它正确地清成"暂无消耗数据"。
+  logSheet.getRange(next.rowIndex + 1, 5, 1, 2).setValues([[usage, cost]]);
+}
+
 function logEntries(categoryId, date, entries, editedBy, confirmOverwrite) {
   const sheet = getOrCreateSheet(logSheetName(categoryId), LOG_HEADERS);
   const rows = sheet.getDataRange().getValues();
@@ -732,6 +799,7 @@ function logEntries(categoryId, date, entries, editedBy, confirmOverwrite) {
     });
 
     let usage = "", cost = "";
+    let needsForwardRecompute = false; // 这次改动的是不是这个物品的历史日期,见下面 recomputeForwardAfterChange
     if (stockFieldId) {
       const stockValRaw = merged[stockFieldId];
       const stockVal = (stockValRaw === undefined || stockValRaw === null || stockValRaw === "") ? null : Number(stockValRaw);
@@ -746,6 +814,7 @@ function logEntries(categoryId, date, entries, editedBy, confirmOverwrite) {
       const isLatestForItem = !rows.some(function (r, idx) {
         return idx > 0 && idx !== existingRowIndex && String(r[1]) === String(itemId) && formatDate(r[0]) > targetDateStr;
       });
+      needsForwardRecompute = !isLatestForItem;
       if (stockVal !== null && !isNaN(stockVal)) {
         // 基准 = 上一次真正盘点的值 + 那次盘点之后、这次盘点之前(都不含)
         // 单独录入的所有进货累加——这样即使某天只录了进货没顺手盘点,后面
@@ -755,11 +824,20 @@ function logEntries(categoryId, date, entries, editedBy, confirmOverwrite) {
         let prevStock = null;
         if (prevCheck !== null) {
           prevStock = prevCheck.value + sumIncomingBetween(rows, itemId, prevCheck.dateStr, targetDateStr, incFieldId);
-        } else if (itemRowIdx !== undefined) {
+        } else if (itemRowIdx !== undefined && isLatestForItem && existingRowIndex === -1) {
           // 真的一条历史盘点记录都没有(全新物品的第一次盘点):退回去用物品
           // 自己的 total_stock 字段当基准——这就是起始库存/纯进货累加生效的
           // 地方。这个字段可能已经被之前"只填进货"的保存累加过,如果这次编辑
           // 的正是那一天的记录,要先退回那次的贡献,不然会被重复计入一次。
+          // 加了 isLatestForItem && existingRowIndex === -1 这两个条件
+          // (2026-07-15):必须同时满足"这是一条全新插入的记录"(不是在编辑
+          // 已经存在的行)和"后面没有更晚的真实盘点",才能保证 total_stock
+          // 从来没被任何一行动过、还是原始起始状态。少了任一个条件都可能读到
+          // 一个已经被别的行(不管是这一行自己更早的旧值,还是后面更晚的真实
+          // 盘点)推进过的 total_stock,拿来当基准就是用别的时间点的数字反推
+          // 现在,算出一个看起来正常、其实毫无意义的假消耗数字——这种情况
+          // 老实退回"暂无消耗数据"更安全,跟 recomputeForwardAfterChange 里
+          // 同一个道理。
           const rawTotal = itemRows[itemRowIdx][6];
           if (rawTotal !== "" && rawTotal !== undefined && rawTotal !== null) {
             prevStock = Number(rawTotal) - priorIncomingOnlyBump(existingValues, incFieldId, stockFieldId);
@@ -798,6 +876,12 @@ function logEntries(categoryId, date, entries, editedBy, confirmOverwrite) {
       sheet.appendRow(rowValues);
       rows.push(rowValues);
     }
+
+    // 这次写的是这个物品的历史日期(不是当前最新一天)——它下一次真实盘点存的
+    // usage/cost 可能是基于这次改之前的旧数据算的,补一次向前重算。必须放在
+    // 上面这行的 setValues/appendRow 之后:recomputeForwardAfterChange 会重新读一遍
+    // 这张表,得先让这次的改动真正落盘,不然读到的还是没改之前的旧值。
+    if (needsForwardRecompute) recomputeForwardAfterChange(categoryId, itemId, formatDate(date));
   });
   return { needsConfirm: false };
 }
@@ -919,7 +1003,18 @@ function undoDeletedRowsStockContribution(categoryId, deletedRows) {
     const hasLaterRow = logRows.some(function (r) {
       return String(r[1]) === String(itemId) && formatDate(r[0]) > deletedDateStr;
     });
-    if (hasLaterRow) return;
+    if (hasLaterRow) {
+      // 对总库存没影响,但如果被删的这行本身填过盘点值或者进货值,它可能是
+      // "下一次真实盘点"消耗计算用的基准之一——删掉之后那一行存的 usage/cost
+      // 会变成基于一个已经不存在的基准算出来的错误数字,补一次向前重算(跟
+      // logEntries 里编辑历史记录时触发的是同一个函数,见 recomputeForwardAfterChange)。
+      const delValues = parseValues(deletedRow[3]);
+      const delHasStock = !(delValues[stockFieldId] === undefined || delValues[stockFieldId] === null || delValues[stockFieldId] === "");
+      const delIncomingRaw = incFieldId ? delValues[incFieldId] : null;
+      const delHasIncoming = !(delIncomingRaw === undefined || delIncomingRaw === null || delIncomingRaw === "") && !isNaN(Number(delIncomingRaw));
+      if (delHasStock || delHasIncoming) recomputeForwardAfterChange(categoryId, itemId, deletedDateStr);
+      return;
+    }
 
     const values = parseValues(deletedRow[3]);
     const stockValRaw = values[stockFieldId];
@@ -965,6 +1060,7 @@ function deleteLogDay(categoryId, date) {
     }
   }
   undoDeletedRowsStockContribution(categoryId, deletedRows);
+  deleteNoteLogDay(categoryId, date); // 物品记录删了,这天的自定义条目也要一起清掉,不然界面上还残留
 }
 
 // 只删某一天里"某个人"录入/最后编辑的那部分记录,别人当天录的不动——
@@ -982,6 +1078,110 @@ function deleteLogDayByEditor(categoryId, date, editedBy) {
     }
   }
   undoDeletedRowsStockContribution(categoryId, deletedRows);
+  deleteNoteLogDayByEditor(categoryId, date, editedBy);
+}
+
+// ---------- 自定义条目(2026-07-15 加):跟物品无关、一天一份的自由文本,比如
+// "当日营业额"(每天记录的分类)或者"应到货/实际缺"备注(两周/一个月记一次的
+// 分类)。故意不复用 fields/items 那一套——那套是"每个物品一行、每个字段一列"
+// 的表格结构,这里是"一天一个值",数据形状完全不一样,硬凑会让 logEntries 的
+// usage/cost 计算逻辑平白多出一堆"这个字段其实不是物品字段"的特殊判断。 ----------
+function listNoteFields(categoryId) {
+  const sheet = getOrCreateSheet(notesSheetName(categoryId), NOTE_FIELDS_HEADERS);
+  const rows = sheet.getDataRange().getValues();
+  const out = [];
+  for (let i = 1; i < rows.length; i++) {
+    if (!rows[i][0]) continue;
+    out.push({ id: rows[i][0], name: rows[i][1], order: Number(rows[i][2]) });
+  }
+  out.sort(function (a, b) { return a.order - b.order; });
+  return out;
+}
+
+function addNoteField(categoryId, name) {
+  name = (name || "").trim();
+  if (!name) throw new Error("条目名称不能为空。");
+  const noteFields = listNoteFields(categoryId);
+  const id = "note_" + new Date().getTime();
+  const sheet = getOrCreateSheet(notesSheetName(categoryId), NOTE_FIELDS_HEADERS);
+  sheet.appendRow([id, name, noteFields.length]);
+  return { id: id, name: name };
+}
+
+function deleteNoteField(categoryId, noteId) {
+  const noteFields = listNoteFields(categoryId).filter(function (f) { return f.id !== noteId; });
+  const sheet = getOrCreateSheet(notesSheetName(categoryId), NOTE_FIELDS_HEADERS);
+  sheet.clear();
+  sheet.appendRow(NOTE_FIELDS_HEADERS);
+  sheet.setFrozenRows(1);
+  noteFields.forEach(function (f, idx) { sheet.appendRow([f.id, f.name, idx]); });
+}
+
+// 按 date+note_id upsert,覆盖前存历史快照——照抄 logEntries 的模式,但不算
+// usage/cost(自定义条目纯文本,没有单位/单价,谈不上"消耗")。值是空字符串的
+// 条目直接跳过不写,不然每天没填的条目也会堆一堆空行进日志表。
+function saveNoteEntries(categoryId, date, values, editedBy) {
+  const sheet = getOrCreateSheet(notelogSheetName(categoryId), NOTE_LOG_HEADERS);
+  const rows = sheet.getDataRange().getValues();
+  const nowIso = new Date().toISOString();
+  Object.keys(values || {}).forEach(function (noteId) {
+    const value = values[noteId];
+    if (value === undefined || value === null || value === "") return;
+    let existingRowIndex = -1;
+    for (let i = 1; i < rows.length; i++) {
+      if (String(rows[i][1]) === String(noteId) && isSameDate(rows[i][0], date)) { existingRowIndex = i; break; }
+    }
+    const rowValues = [date, noteId, value, nowIso, editedBy || ""];
+    if (existingRowIndex >= 0) {
+      getOrCreateSheet(notehistorySheetName(categoryId), NOTE_HISTORY_HEADERS).appendRow(rows[existingRowIndex]);
+      sheet.getRange(existingRowIndex + 1, 1, 1, rowValues.length).setValues([rowValues]);
+      rows[existingRowIndex] = rowValues;
+    } else {
+      sheet.appendRow(rowValues);
+      rows.push(rowValues);
+    }
+  });
+}
+
+function getRecentNoteLog(categoryId, days) {
+  const sheet = getOrCreateSheet(notelogSheetName(categoryId), NOTE_LOG_HEADERS);
+  const rows = sheet.getDataRange().getValues();
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days);
+  const out = [];
+  for (let i = 1; i < rows.length; i++) {
+    if (!rows[i][1]) continue;
+    if (new Date(rows[i][0]).getTime() < cutoff.getTime()) continue;
+    out.push({
+      date: formatDate(rows[i][0]), noteId: rows[i][1], value: rows[i][2],
+      editedAt: rows[i][3] || null, editedBy: rows[i][4] || null,
+    });
+  }
+  return out;
+}
+
+function deleteNoteLogDay(categoryId, date) {
+  const sheet = getOrCreateSheet(notelogSheetName(categoryId), NOTE_LOG_HEADERS);
+  const historySheet = getOrCreateSheet(notehistorySheetName(categoryId), NOTE_HISTORY_HEADERS);
+  const rows = sheet.getDataRange().getValues();
+  for (let i = rows.length - 1; i >= 1; i--) {
+    if (rows[i][1] && isSameDate(rows[i][0], date)) {
+      historySheet.appendRow(rows[i]);
+      sheet.deleteRow(i + 1);
+    }
+  }
+}
+
+function deleteNoteLogDayByEditor(categoryId, date, editedBy) {
+  const sheet = getOrCreateSheet(notelogSheetName(categoryId), NOTE_LOG_HEADERS);
+  const historySheet = getOrCreateSheet(notehistorySheetName(categoryId), NOTE_HISTORY_HEADERS);
+  const rows = sheet.getDataRange().getValues();
+  for (let i = rows.length - 1; i >= 1; i--) {
+    if (rows[i][1] && isSameDate(rows[i][0], date) && String(rows[i][4] || "") === String(editedBy || "")) {
+      historySheet.appendRow(rows[i]);
+      sheet.deleteRow(i + 1);
+    }
+  }
 }
 
 // ---------- 汇率(服务器代理,浏览器 fetch 没法自定义 User-Agent) ----------
@@ -1008,6 +1208,8 @@ function doGet(e) {
     if (action === "listFields") return jsonResponse({ fields: listFields(p.categoryId) });
     if (action === "listItems") return jsonResponse(getItemsWithLatestStockCheck(p.categoryId));
     if (action === "getLog") return jsonResponse({ log: getRecentLog(p.categoryId, parseInt(p.days || "30", 10)) });
+    if (action === "listNoteFields") return jsonResponse({ noteFields: listNoteFields(p.categoryId) });
+    if (action === "getNoteLog") return jsonResponse({ noteLog: getRecentNoteLog(p.categoryId, parseInt(p.days || "30", 10)) });
     if (action === "getEntryHistory") return jsonResponse({ history: getEntryHistory(p.categoryId, p.itemId, p.date) });
     if (action === "getDayHistoryByEditor") return jsonResponse({ entries: getDayHistoryByEditor(p.categoryId, p.date, p.editedBy) });
     if (action === "getExchangeRates") return jsonResponse(getExchangeRates(p.base));
@@ -1064,6 +1266,14 @@ function doPost(e) {
     if (action === "deleteField") { requireAdmin(session); deleteField(payload.categoryId, payload.fieldId); return jsonResponse({ status: "ok" }); }
     if (action === "reorderFields") { requireAdmin(session); reorderFields(payload.categoryId, payload.fieldIds); return jsonResponse({ status: "ok" }); }
 
+    if (action === "addNoteField") { requireAdmin(session); return jsonResponse({ noteField: addNoteField(payload.categoryId, payload.name) }); }
+    if (action === "deleteNoteField") { requireAdmin(session); deleteNoteField(payload.categoryId, payload.noteId); return jsonResponse({ status: "ok" }); }
+    if (action === "saveNoteEntries") {
+      requireStoreForCategory(session, payload.categoryId);
+      saveNoteEntries(payload.categoryId, payload.date, payload.values, session.display_name || session.username);
+      return jsonResponse({ status: "ok" });
+    }
+
     if (action === "saveLogEntries") {
       requireStoreForCategory(session, payload.categoryId);
       const result = logEntries(payload.categoryId, payload.date, payload.entries, session.display_name || session.username, !!payload.confirmOverwrite);
@@ -1078,7 +1288,13 @@ function doPost(e) {
     }
 
     if (action === "deleteLogDayByEditor") {
-      requireAdmin(session);
+      // 员工只能删自己录入/最后编辑的那部分(2026-07-15 开放,原来是 requireAdmin
+      // 硬门槛,员工完全没有删除入口)——admin 不受限,员工必须传自己的名字,
+      // 服务器端强制核对,不能只靠前端把按钮藏起来防止删别人的记录。
+      requireStoreForCategory(session, payload.categoryId);
+      if (session.role !== "admin" && String(payload.editedBy) !== String(session.display_name || session.username)) {
+        throw new Error("只能删除自己录入的记录。");
+      }
       deleteLogDayByEditor(payload.categoryId, payload.date, payload.editedBy);
       return jsonResponse({ status: "ok" });
     }
