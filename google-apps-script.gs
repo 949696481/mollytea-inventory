@@ -316,6 +316,19 @@ function requireStoreForCategory(session, categoryId) {
   }
 }
 
+// 跟 requireStoreForCategory 是同一条规则,只是直接给 storeId(listCategories/
+// listStores 用,这两个接口拿到的是门店 id,不是分类 id,没法走 getCategoryStoreId
+// 反查)。2026-07-16 补的——之前只有 doPost 的三个写操作挡了员工跨店,doGet 的
+// 读接口(listItems/getLog/listNoteFields 等)完全没查 session 是不是这个店的,
+// 员工账号只要登录就能拿别的门店的物品/库存/进销记录/自定义条目(比如营业额)/
+// 编辑历史——不需要猜 id,listStores/listCategories 本身就会把所有门店和分类原样
+// 吐出来。管理员不受这条限制,继续能看全部门店。
+function requireStoreAccess(session, storeId) {
+  if (session.role === "employee" && String(storeId) !== String(session.store_id)) {
+    throw new Error("没有权限查看这个门店的数据。");
+  }
+}
+
 // ---------- 门店 ----------
 function listStores() {
   const sheet = getOrCreateSheet(STORES_SHEET, STORES_HEADERS);
@@ -326,6 +339,14 @@ function listStores() {
     out.push({ id: rows[i][0], name: rows[i][1] });
   }
   return out;
+}
+
+// 员工账号只应该看到自己绑定的那一家门店——之前 listStores() 原样返回全部,
+// 见上面 requireStoreAccess 的说明。管理员没有限制,继续能看全部门店。
+function listStoresForSession(session) {
+  const all = listStores();
+  if (session.role === "admin") return all;
+  return all.filter(function (s) { return String(s.id) === String(session.store_id); });
 }
 
 function getStoreById(storeId) {
@@ -541,6 +562,121 @@ function addItem(categoryId, name, unit, price, currency, startingStock) {
     id: id, name: name, unit: unit, price: price, currency: currency || DEFAULT_CURRENCY, locked: false,
     totalStock: hasStarting ? Number(startingStock) : null,
   };
+}
+
+// 批量添加物品(Excel 导入用)——一次性 setValues 写入,不是循环 appendRow,
+// 避免几十上百个物品导入时一行一次单独写表格。按名称(去空格、忽略大小写)
+// 跟当前分类里已有的物品去重,同一批 excel 里自己重复的名字也会去重,重复的
+// 名字进 skipped 不导入,不覆盖已有物品。不接受起始库存——用户要求这批物品
+// 导入后自己去点"目前总库存"手动设置,保持跟单个添加时"不填起始库存"一样的
+// 空白状态(total_stock 留空,第一次真正盘点前显示"暂无记录")。
+function addItemsBulk(categoryId, items) {
+  const sheet = getOrCreateSheet(itemsSheetName(categoryId), ITEMS_HEADERS);
+  const existingNames = new Set(listItems(categoryId).map(it => String(it.name).trim().toLowerCase()));
+  const baseTime = new Date().getTime();
+  const added = [];
+  const skipped = [];
+  const rows = [];
+  (items || []).forEach((raw, idx) => {
+    const name = String((raw && raw.name) || "").trim();
+    if (!name) return;
+    const key = name.toLowerCase();
+    if (existingNames.has(key)) { skipped.push(name); return; }
+    existingNames.add(key);
+    const id = "item_" + (baseTime + idx);
+    const unit = (raw.unit && String(raw.unit).trim()) || "个";
+    const price = Number(raw.price) || 0;
+    const currency = raw.currency || DEFAULT_CURRENCY;
+    rows.push([id, name, unit, price, currency, false, ""]);
+    added.push({ id: id, name: name, unit: unit, price: price, currency: currency, locked: false, totalStock: null });
+  });
+  if (rows.length) {
+    sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, ITEMS_HEADERS.length).setValues(rows);
+  }
+  return { added: added, skipped: skipped };
+}
+
+// AI 智能识别 Excel 导入——跟 addItemsBulk 配合用:前端先把整张表格原样解析成
+// 二维数组(不假设任何固定列),这里把原始数据交给 Claude API 提取"名称/单位/
+// 单价",不管表头怎么写、列顺序、有没有多余的列。返回结构化结果后前端会先
+// 给用户看一遍预览,确认了才真的调 addItemsBulk 写进表格——不在这一步直接
+// 写数据,AI 判断有误也不会污染库存表。
+//
+// API key 存在这份 Apps Script 项目的 Script Property 里(不是写死在代码里),
+// 只有 Kevin 自己的 Google 账号登进 Apps Script 编辑器才能看到/改——员工账号、
+// 前端网页、查看网页源代码都碰不到这个 key,它从来不会传到浏览器。设置方法:
+// Apps Script 编辑器左侧齿轮图标"项目设置" -> "脚本属性" -> 新增属性,
+// 名称填 ANTHROPIC_API_KEY,值填真正的 key。
+function aiParseImportRows(rawRows) {
+  const apiKey = PropertiesService.getScriptProperties().getProperty("ANTHROPIC_API_KEY");
+  if (!apiKey) {
+    throw new Error("还没有配置 AI 识别用的 API key——去 Apps Script 编辑器左侧齿轮"
+      + "图标「项目设置」->「脚本属性」,新增一个名称叫 ANTHROPIC_API_KEY 的属性,"
+      + "值填 Anthropic API key,保存后再试。");
+  }
+
+  const systemPrompt = "你是一个从杂乱的 Excel/表格原始数据里提取物品清单的助手。"
+    + "输入是表格的原始二维数组,每个内层数组是一行的所有单元格,可能包含标题行、"
+    + "空行、说明性文字、多余的列,列的顺序和语言也不一定固定。找出真正代表"
+    + "\"物品\"的每一行,提取它的名称(必须有)、单位(比如 个/L/kg,没有就留空)、"
+    + "单价(数字,没有就留空)。跳过标题行、空行、汇总行、任何不是具体物品的行。"
+    + "不要编造数据里没有的信息。";
+
+  const payload = {
+    model: "claude-opus-4-8",
+    max_tokens: 4096,
+    system: systemPrompt,
+    messages: [{ role: "user", content: "原始表格数据(JSON 二维数组,每个内层数组是一行):\n" + JSON.stringify(rawRows) }],
+    output_config: {
+      format: {
+        type: "json_schema",
+        schema: {
+          type: "object",
+          properties: {
+            items: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  name: { type: "string" },
+                  unit: { type: "string" },
+                  price: { type: "number" },
+                },
+                required: ["name"],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ["items"],
+          additionalProperties: false,
+        },
+      },
+    },
+  };
+
+  const response = UrlFetchApp.fetch("https://api.anthropic.com/v1/messages", {
+    method: "post",
+    contentType: "application/json",
+    headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+  });
+
+  const status = response.getResponseCode();
+  const bodyText = response.getContentText();
+  if (status !== 200) {
+    throw new Error("AI 识别失败(状态码 " + status + "): " + bodyText);
+  }
+  const body = JSON.parse(bodyText);
+  if (body.stop_reason === "refusal") {
+    throw new Error("AI 拒绝处理这份数据,换成不联网的固定格式导入试试。");
+  }
+  const textBlock = (body.content || []).filter(function (b) { return b.type === "text"; })[0];
+  if (!textBlock) {
+    throw new Error("AI 没有返回可解析的结果,请重试。");
+  }
+  const parsed = JSON.parse(textBlock.text);
+  return { items: parsed.items || [] };
 }
 
 // 直接改 total_stock 这个数字,不碰任何一天的日志行——不产生消耗记录,只是
@@ -1202,16 +1338,16 @@ function doGet(e) {
     const session = resolveSession(p.token);
     if (!session) return jsonResponse({ error: "请重新登录。" });
 
-    if (action === "listStores") return jsonResponse({ stores: listStores() });
-    if (action === "listCategories") return jsonResponse({ categories: listCategories(p.storeId) });
-    if (action === "getSettlementCurrency") return jsonResponse({ currency: getSettlementCurrency(p.categoryId) });
-    if (action === "listFields") return jsonResponse({ fields: listFields(p.categoryId) });
-    if (action === "listItems") return jsonResponse(getItemsWithLatestStockCheck(p.categoryId));
-    if (action === "getLog") return jsonResponse({ log: getRecentLog(p.categoryId, parseInt(p.days || "30", 10)) });
-    if (action === "listNoteFields") return jsonResponse({ noteFields: listNoteFields(p.categoryId) });
-    if (action === "getNoteLog") return jsonResponse({ noteLog: getRecentNoteLog(p.categoryId, parseInt(p.days || "30", 10)) });
-    if (action === "getEntryHistory") return jsonResponse({ history: getEntryHistory(p.categoryId, p.itemId, p.date) });
-    if (action === "getDayHistoryByEditor") return jsonResponse({ entries: getDayHistoryByEditor(p.categoryId, p.date, p.editedBy) });
+    if (action === "listStores") return jsonResponse({ stores: listStoresForSession(session) });
+    if (action === "listCategories") { requireStoreAccess(session, p.storeId); return jsonResponse({ categories: listCategories(p.storeId) }); }
+    if (action === "getSettlementCurrency") { requireStoreForCategory(session, p.categoryId); return jsonResponse({ currency: getSettlementCurrency(p.categoryId) }); }
+    if (action === "listFields") { requireStoreForCategory(session, p.categoryId); return jsonResponse({ fields: listFields(p.categoryId) }); }
+    if (action === "listItems") { requireStoreForCategory(session, p.categoryId); return jsonResponse(getItemsWithLatestStockCheck(p.categoryId)); }
+    if (action === "getLog") { requireStoreForCategory(session, p.categoryId); return jsonResponse({ log: getRecentLog(p.categoryId, parseInt(p.days || "30", 10)) }); }
+    if (action === "listNoteFields") { requireStoreForCategory(session, p.categoryId); return jsonResponse({ noteFields: listNoteFields(p.categoryId) }); }
+    if (action === "getNoteLog") { requireStoreForCategory(session, p.categoryId); return jsonResponse({ noteLog: getRecentNoteLog(p.categoryId, parseInt(p.days || "30", 10)) }); }
+    if (action === "getEntryHistory") { requireStoreForCategory(session, p.categoryId); return jsonResponse({ history: getEntryHistory(p.categoryId, p.itemId, p.date) }); }
+    if (action === "getDayHistoryByEditor") { requireStoreForCategory(session, p.categoryId); return jsonResponse({ entries: getDayHistoryByEditor(p.categoryId, p.date, p.editedBy) }); }
     if (action === "getExchangeRates") return jsonResponse(getExchangeRates(p.base));
     if (action === "listUsers") { requireAdmin(session); return jsonResponse({ users: listUsers() }); }
     return jsonResponse({ error: "unknown action" });
@@ -1251,6 +1387,8 @@ function doPost(e) {
     if (action === "setSettlementCurrency") { requireAdmin(session); setSettlementCurrency(payload.categoryId, payload.currency); return jsonResponse({ status: "ok" }); }
 
     if (action === "addItem") { requireAdmin(session); return jsonResponse({ item: addItem(payload.categoryId, payload.name, payload.unit, payload.price, payload.currency, payload.startingStock) }); }
+    if (action === "addItemsBulk") { requireAdmin(session); return jsonResponse(addItemsBulk(payload.categoryId, payload.items)); }
+    if (action === "aiParseImportRows") { requireAdmin(session); return jsonResponse(aiParseImportRows(payload.rawRows)); }
     if (action === "updateItem") { requireAdmin(session); updateItem(payload.categoryId, payload.itemId, payload.name, payload.unit, payload.price, payload.currency); return jsonResponse({ status: "ok" }); }
     if (action === "setTotalStock") { requireAdmin(session); setTotalStock(payload.categoryId, payload.itemId, payload.value); return jsonResponse({ status: "ok" }); }
     if (action === "deleteItem") { requireAdmin(session); deleteItemById(payload.categoryId, payload.itemId); return jsonResponse({ status: "ok" }); }

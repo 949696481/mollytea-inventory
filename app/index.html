@@ -10,6 +10,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0B3D33">
 <script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root {
     --bg-deep: #0B3D33;
@@ -575,6 +576,28 @@
           <div class="hint" style="margin-top:4px;">填了这个,以后第一次真正盘点就能算出消耗;不填的话第一次盘点还是会显示"暂无消耗数据"</div>
         </div>
         <button class="btn-secondary" id="addItemBtn" style="margin-top:8px;">添加物品</button>
+
+        <div style="margin-top:16px;padding-top:16px;border-top:1px dashed var(--paper-dim);">
+          <div style="font-weight:700;margin-bottom:4px;">从 Excel 批量导入</div>
+          <div class="hint" style="margin-bottom:8px;">
+            表格第一行当标题(会跳过),第一列是物品名称(必须),第二列单位、
+            第三列单价可以不填。库存不从表格导入,导入后请自己在"目前总库存"
+            里给每个物品设置库存。
+          </div>
+          <input type="file" id="importItemsFile" accept=".xlsx,.xls,.csv" style="display:none;">
+          <button class="btn-secondary" id="importItemsBtn">选择 Excel 文件导入</button>
+          <div class="status-line" id="importItemsStatus"></div>
+
+          <div style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--paper-dim);">
+            <div class="hint" style="margin-bottom:8px;">
+              表格格式很乱、列不固定、不想按上面的格式整理?可以用 AI 识别——
+              会把表格内容发给 Claude 解析,导入前一样会给你看一遍预览再确认。
+            </div>
+            <input type="file" id="aiImportItemsFile" accept=".xlsx,.xls,.csv" style="display:none;">
+            <button class="btn-ghost" id="aiImportItemsBtn">AI 智能导入(格式随意)</button>
+            <div class="status-line" id="aiImportItemsStatus"></div>
+          </div>
+        </div>
 
         <div style="margin-top:20px;padding-top:16px;border-top:1px dashed var(--paper-dim);">
           <div style="font-weight:700;margin-bottom:4px;">自定义条目</div>
@@ -2411,6 +2434,107 @@ async function addItem() {
   }
 }
 
+// ---------- 从 Excel 批量导入物品 ----------
+// 只解析名称/单位/单价,不读库存列——库存要求 Kevin 导入后自己在"目前总库存"
+// 里逐个设置,见 itemsSettingsCard 里的说明文案。用 SheetJS(xlsx.js,head 里
+// CDN 引入)在浏览器端直接解析,不用先转 CSV 也不用后端多跑一趟。
+async function handleImportItemsFile(file) {
+  const statusEl = document.getElementById("importItemsStatus");
+  statusEl.className = "status-line"; statusEl.textContent = "解析中…";
+  let rows;
+  try {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: "array" });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    rows = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false });
+  } catch (err) {
+    statusEl.className = "status-line error"; statusEl.textContent = "文件解析失败: " + err.message;
+    return;
+  }
+  const dataRows = rows.slice(1); // 第一行当标题跳过
+  const parsed = [];
+  const seen = new Set();
+  dataRows.forEach(r => {
+    const name = String(r[0] == null ? "" : r[0]).trim();
+    if (!name) return;
+    const key = name.toLowerCase();
+    if (seen.has(key)) return; // excel 里自己重复的名字,前端先去一遍,后端也会再查一遍已有物品
+    seen.add(key);
+    const unit = r[1] != null ? String(r[1]).trim() : "";
+    const price = r[2] != null && r[2] !== "" ? Number(r[2]) : undefined;
+    parsed.push({ name, unit: unit || undefined, price });
+  });
+  if (!parsed.length) {
+    statusEl.className = "status-line error"; statusEl.textContent = "没有解析到任何物品名称,检查一下表格格式。";
+    return;
+  }
+  if (!confirm(`从表格里读到 ${parsed.length} 个物品,确认导入到「${currentCategory.name}」?`)) {
+    statusEl.className = "status-line"; statusEl.textContent = "";
+    return;
+  }
+  try {
+    const result = await apiPost("addItemsBulk", { categoryId: currentCategory.id, items: parsed });
+    let msg = `导入完成:新增 ${result.added.length} 个`;
+    if (result.skipped.length) msg += `,跳过 ${result.skipped.length} 个已存在的(${result.skipped.join("、")})`;
+    statusEl.className = "status-line"; statusEl.textContent = msg;
+    await loadItemsAndStock();
+  } catch (err) {
+    statusEl.className = "status-line error"; statusEl.textContent = "导入失败: " + err.message;
+  }
+}
+
+// ---------- AI 智能导入(格式随意) ----------
+// 前端只负责把 Excel 原样解析成二维数组(不假设任何固定列位置),真正的
+// "哪一列是名称/单位/单价"识别工作交给后端调 Claude API 做——API key 只存在
+// Apps Script 的 Script Property 里,前端代码和浏览器都碰不到。导入前一样有
+// 预览确认这一步,AI 判断错了不会直接污染库存表。
+async function handleAiImportItemsFile(file) {
+  const statusEl = document.getElementById("aiImportItemsStatus");
+  statusEl.className = "status-line"; statusEl.textContent = "解析表格中…";
+  let rawRows;
+  try {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: "array" });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false });
+  } catch (err) {
+    statusEl.className = "status-line error"; statusEl.textContent = "文件解析失败: " + err.message;
+    return;
+  }
+  if (!rawRows.length) {
+    statusEl.className = "status-line error"; statusEl.textContent = "表格是空的。";
+    return;
+  }
+  statusEl.textContent = "AI 识别中,可能要几秒…";
+  let items;
+  try {
+    const result = await apiPost("aiParseImportRows", { rawRows });
+    items = (result.items || []).map(it => ({ name: it.name, unit: it.unit || undefined, price: it.price }));
+  } catch (err) {
+    statusEl.className = "status-line error"; statusEl.textContent = "AI 识别失败: " + err.message;
+    return;
+  }
+  items = items.filter(it => it && it.name && String(it.name).trim());
+  if (!items.length) {
+    statusEl.className = "status-line error"; statusEl.textContent = "AI 没有识别到任何物品,换固定格式导入试试。";
+    return;
+  }
+  const preview = items.slice(0, 10).map(it => it.name).join("、") + (items.length > 10 ? " 等" : "");
+  if (!confirm(`AI 识别到 ${items.length} 个物品:${preview}\n\n确认导入到「${currentCategory.name}」?`)) {
+    statusEl.className = "status-line"; statusEl.textContent = "";
+    return;
+  }
+  try {
+    const result = await apiPost("addItemsBulk", { categoryId: currentCategory.id, items });
+    let msg = `导入完成:新增 ${result.added.length} 个`;
+    if (result.skipped.length) msg += `,跳过 ${result.skipped.length} 个已存在的(${result.skipped.join("、")})`;
+    statusEl.className = "status-line"; statusEl.textContent = msg;
+    await loadItemsAndStock();
+  } catch (err) {
+    statusEl.className = "status-line error"; statusEl.textContent = "导入失败: " + err.message;
+  }
+}
+
 // ---------- 登录 / 首次设置管理员账号 ----------
 const REMEMBER_USERNAME_KEY = "inv_remember_username_v1";
 const AUTOLOGIN_KEY = "inv_autologin_v1"; // {username, password},明文存在浏览器本地——
@@ -2565,6 +2689,22 @@ document.getElementById("saveBtn").addEventListener("click", saveToday);
 document.getElementById("saveDirectBtn").addEventListener("click", saveDirectly);
 document.getElementById("refreshHistoryBtn").addEventListener("click", loadHistory);
 document.getElementById("addItemBtn").addEventListener("click", addItem);
+document.getElementById("importItemsBtn").addEventListener("click", () => {
+  document.getElementById("importItemsFile").click();
+});
+document.getElementById("importItemsFile").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = ""; // 允许连续两次选同一个文件也能触发 change
+  if (file) await handleImportItemsFile(file);
+});
+document.getElementById("aiImportItemsBtn").addEventListener("click", () => {
+  document.getElementById("aiImportItemsFile").click();
+});
+document.getElementById("aiImportItemsFile").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (file) await handleAiImportItemsFile(file);
+});
 document.getElementById("toggleItemsBtn").addEventListener("click", () => {
   const el = document.getElementById("itemsManage");
   el.style.display = el.style.display === "none" ? "block" : "none";
