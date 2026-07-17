@@ -245,11 +245,14 @@ function listUsers(session) {
   return out;
 }
 
-// 管理员专属:直接把一个已有账号在 员工/班长/经理 三级之间改,不动门店。
-// 不能通过这个接口把账号改成管理员——升级到管理员权限太重,不该是下拉框
-// 级别的操作;也不能改管理员账号本身的角色(系统里本来就只有一个管理员,
-// 不该被这个流程动到)。
-function changeUserRole(userId, newRole) {
+// 直接把一个已有账号在 员工/班长/经理 三级之间改,不动门店。管理员能改任何
+// 非管理员账号;经理/班长(2026-07-17 从"仅管理员"放开)只能改比自己等级
+// 低的账号(经理能改班长/员工,班长只能改员工),而且只能把新角色设成"不超过
+// 自己当前等级"——经理能把一个员工提到跟自己平级的经理,但不能超过;班长最高
+// 只能把员工提到班长(跟自己平级),同样不能更高。不管是谁改,都不能通过这个
+// 接口把账号改成/改动管理员——升级到管理员权限太重,不该是下拉框级别的操作,
+// 系统里本来就只有一个管理员,不该被这个流程动到。
+function changeUserRole(session, userId, newRole) {
   if (newRole !== "employee" && newRole !== "shift_leader" && newRole !== "manager") {
     throw new Error("角色不对。");
   }
@@ -257,7 +260,14 @@ function changeUserRole(userId, newRole) {
   const rows = sheet.getDataRange().getValues();
   for (let i = 1; i < rows.length; i++) {
     if (String(rows[i][0]) === String(userId)) {
-      if (rows[i][4] === "admin") throw new Error("不能修改管理员账号的角色。");
+      const targetRole = rows[i][4];
+      const targetStoreId = rows[i][6];
+      if (targetRole === "admin") throw new Error("不能修改管理员账号的角色。");
+      if (session.role !== "admin") {
+        if (String(targetStoreId) !== String(session.store_id)) throw new Error("没有权限修改这个账号。");
+        if ((ROLE_LEVELS[targetRole] || 0) >= ROLE_LEVELS[session.role]) throw new Error("没有权限修改这个账号。");
+        if ((ROLE_LEVELS[newRole] || 0) > ROLE_LEVELS[session.role]) throw new Error("不能把权限改得比自己还高。");
+      }
       sheet.getRange(i + 1, 5).setValue(newRole);
       return;
     }
@@ -1470,7 +1480,7 @@ function doPost(e) {
     if (action === "createEmployee") { requireLevel(session, ROLE_LEVELS.shift_leader); return jsonResponse({ user: createEmployee(session, payload.username, payload.password, payload.displayName, payload.storeId, payload.role) }); }
     if (action === "deleteUser") { requireLevel(session, ROLE_LEVELS.manager); deleteUserById(session, payload.userId); return jsonResponse({ status: "ok" }); }
     if (action === "resetPassword") { requireAdmin(session); resetPassword(payload.userId, payload.newPassword); return jsonResponse({ status: "ok" }); }
-    if (action === "changeUserRole") { requireAdmin(session); changeUserRole(payload.userId, payload.newRole); return jsonResponse({ status: "ok" }); }
+    if (action === "changeUserRole") { requireLevel(session, ROLE_LEVELS.shift_leader); changeUserRole(session, payload.userId, payload.newRole); return jsonResponse({ status: "ok" }); }
 
     if (action === "createStore") { requireAdmin(session); return jsonResponse({ store: createStore(payload.name) }); }
     if (action === "deleteStore") { requireAdmin(session); deleteStoreById(payload.storeId); return jsonResponse({ status: "ok" }); }

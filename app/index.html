@@ -2868,16 +2868,25 @@ function renderAccountsList(users, storesList) {
     row.className = "row";
     // 重置密码只有管理员能做;删除账号管理员能删任何人,经理只能删同店的
     // "员工"级账号(后端 deleteUserById 会再核一遍,这里只是不露出点了也会
-    // 被拒绝的按钮);改角色(员工/班长/经理互换)也只有管理员能做——2026-07-17
-    // 新加的,不下放给经理/班长,避免自己把自己或别人升级成经理这种越权。
+    // 被拒绝的按钮)。
+    //
+    // 改角色(2026-07-17 从"仅管理员"放开给经理/班长):谁能改谁——只能改
+    // "比自己等级低"的账号(经理能改班长/员工,班长只能改员工,管理员能改
+    // 除自己以外的所有人),下拉框的可选项也只到"自己当前的等级"为止(经理
+    // 最高能把人提到经理、班长最高能提到班长,谁都不能通过这里把人提到管理员
+    // ——那个太敏感,不是下拉框级别的操作)。后端 changeUserRole 会按同一套
+    // 规则再核一遍,这里只是不露出点了也会被拒绝的控件。
     const canReset = isAdmin();
     const canDelete = isAdmin() || (isManagerUp() && u.role === "employee");
-    const canChangeRole = isAdmin();
+    const canChangeRole = isShiftLeaderUp() && (ROLE_LEVELS[u.role] || 0) < myLevel();
+    const SETTABLE_ROLES = [
+      { value: "employee", label: "员工" },
+      { value: "shift_leader", label: "班长" },
+      { value: "manager", label: "经理" },
+    ].filter(r => ROLE_LEVELS[r.value] <= myLevel());
     const roleSelectHtml = canChangeRole
       ? `<select data-action="role-select">
-          <option value="employee" ${u.role === "employee" ? "selected" : ""}>员工</option>
-          <option value="shift_leader" ${u.role === "shift_leader" ? "selected" : ""}>班长</option>
-          <option value="manager" ${u.role === "manager" ? "selected" : ""}>经理</option>
+          ${SETTABLE_ROLES.map(r => `<option value="${r.value}" ${u.role === r.value ? "selected" : ""}>${r.label}</option>`).join("")}
         </select>`
       : "";
     row.innerHTML = `
