@@ -707,6 +707,27 @@ function deleteItemById(categoryId, itemId) {
   sheet.deleteRow(row.rowIndex);
 }
 
+// 批量删除物品(前端多选一次性删,导入导错名字之后清理用)——跟单个删除
+// (deleteItemById)同样的锁定保护:锁定的物品直接跳过不强删,收集进
+// skippedLocked 让前端提示,不像单个删除那样直接报错中断。按行号从大到小
+// 删,不然从上往下删的过程中,后面几行的真实行号会跟着往上移、错位删错行。
+function deleteItemsBulk(categoryId, itemIds) {
+  const sheet = getOrCreateSheet(itemsSheetName(categoryId), ITEMS_HEADERS);
+  const rows = sheet.getDataRange().getValues();
+  const idSet = new Set((itemIds || []).map(function (id) { return String(id); }));
+  const rowIndicesToDelete = [];
+  const deletedNames = [];
+  const skippedLocked = [];
+  for (let i = 1; i < rows.length; i++) {
+    if (!rows[i][0] || !idSet.has(String(rows[i][0]))) continue;
+    if (rows[i][5] === true) { skippedLocked.push(rows[i][1]); continue; }
+    rowIndicesToDelete.push(i + 1);
+    deletedNames.push(rows[i][1]);
+  }
+  rowIndicesToDelete.sort(function (a, b) { return b - a; }).forEach(function (rowIndex) { sheet.deleteRow(rowIndex); });
+  return { deletedCount: deletedNames.length, deletedNames: deletedNames, skippedLocked: skippedLocked };
+}
+
 function setItemLocked(categoryId, itemId, locked) {
   const row = getItemRow(categoryId, itemId);
   if (!row) throw new Error("找不到这个物品。");
@@ -1392,6 +1413,7 @@ function doPost(e) {
     if (action === "updateItem") { requireAdmin(session); updateItem(payload.categoryId, payload.itemId, payload.name, payload.unit, payload.price, payload.currency); return jsonResponse({ status: "ok" }); }
     if (action === "setTotalStock") { requireAdmin(session); setTotalStock(payload.categoryId, payload.itemId, payload.value); return jsonResponse({ status: "ok" }); }
     if (action === "deleteItem") { requireAdmin(session); deleteItemById(payload.categoryId, payload.itemId); return jsonResponse({ status: "ok" }); }
+    if (action === "deleteItemsBulk") { requireAdmin(session); return jsonResponse(deleteItemsBulk(payload.categoryId, payload.itemIds)); }
     if (action === "lockItem") { requireAdmin(session); setItemLocked(payload.categoryId, payload.itemId, true); return jsonResponse({ status: "ok" }); }
     if (action === "unlockItem") {
       requireAdmin(session);

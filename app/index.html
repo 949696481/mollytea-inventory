@@ -325,6 +325,34 @@
   .stock-tile-value { font-size: 20px; font-weight: 700; color: var(--ink); }
   .stock-tile-value .unit { font-size: 11px; font-weight: 400; color: var(--ink-dim); margin-left: 3px; }
   .stock-tile-hint { font-size: 10px; color: var(--gold-dark); margin-top: 6px; }
+  .stock-tile-more { display: flex; align-items: center; justify-content: center; }
+  .stock-tile-more .stock-tile-hint { color: var(--ink-dim); font-weight: 600; }
+
+  .item-search { position: relative; margin-bottom: 12px; }
+  .item-search input {
+    width: 100%; padding: 10px 12px; border-radius: 10px;
+    border: 1.5px solid var(--paper-dim); font-size: 13px;
+  }
+  .item-search-dropdown {
+    position: absolute; left: 0; right: 0; top: calc(100% + 4px);
+    background: var(--paper); border: 1.5px solid var(--paper-dim);
+    border-radius: 10px; box-shadow: 0 10px 24px rgba(0,0,0,0.18);
+    max-height: 240px; overflow-y: auto; z-index: 20; display: none;
+  }
+  .item-search-option { padding: 10px 12px; font-size: 13px; cursor: pointer; }
+  .item-search-option:hover { background: var(--paper-dim); }
+  .item-search-empty { padding: 10px 12px; font-size: 12px; color: var(--ink-dim); }
+
+  .item-list-more-row td {
+    text-align: center; color: var(--gold-dark); font-weight: 600; cursor: pointer;
+  }
+
+  @keyframes itemJumpFlash {
+    0%, 30% { background: var(--gold-light); }
+    100% { background: transparent; }
+  }
+  .item-jump-highlight { animation: itemJumpFlash 1.8s ease; }
+  tr.item-jump-highlight td { animation: itemJumpFlash 1.8s ease; }
 
   .calendar-nav {
     display: flex;
@@ -472,6 +500,10 @@
 
     <div class="card" id="stockSummaryCard" style="display:none;">
       <h2>目前总库存</h2>
+      <div class="item-search" id="stockSummarySearch" style="display:none;">
+        <input type="text" id="stockSummarySearchInput" placeholder="搜索物品…">
+        <div class="item-search-dropdown" id="stockSummarySearchDropdown"></div>
+      </div>
       <div id="stockSummary"></div>
     </div>
 
@@ -496,6 +528,10 @@
       </div>
       <div id="noteEntrySection" style="display:none;margin-bottom:14px;">
         <div id="noteEntryFields"></div>
+      </div>
+      <div class="item-search" id="entryTableSearch" style="display:none;">
+        <input type="text" id="entryTableSearchInput" placeholder="搜索物品…">
+        <div class="item-search-dropdown" id="entryTableSearchDropdown"></div>
       </div>
       <div id="entryTableWrap" style="overflow-x:auto;display:none;">
         <table class="entry-table" id="entryTable">
@@ -564,6 +600,13 @@
     <div class="card" id="itemsSettingsCard">
       <h2>物品设置 <button class="btn-ghost" id="toggleItemsBtn">管理</button></h2>
       <div id="itemsManage" style="display:none;">
+        <div id="itemsBulkDeleteBar" style="display:none;align-items:center;gap:10px;margin-bottom:8px;">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;">
+            <input type="checkbox" id="itemsSelectAllCheckbox"> 全选
+          </label>
+          <span class="hint" id="itemsSelectedCount"></span>
+          <button class="btn-ghost" id="deleteSelectedItemsBtn" style="margin-left:auto;color:var(--danger);">删除选中</button>
+        </div>
         <div id="currentItemsList"></div>
         <div class="add-item-form">
           <input class="name" id="newItemName" placeholder="名称,如 牛奶">
@@ -1016,6 +1059,9 @@ async function selectCategory(cat) {
   document.getElementById("fieldsManage").style.display = "none";
   editingEntry = null;
   todayInputs = {};
+  stockSummaryExpanded = false;
+  entryTableExpanded = false;
+  selectedItemIdsForDelete.clear();
   {
     const { start, end } = computeQuickRange("ThisWeek");
     summaryRangeStart = dateToStr(start);
@@ -1322,6 +1368,68 @@ async function saveNoteEntriesIfAny(date) {
   await apiPost("saveNoteEntries", { categoryId: currentCategory.id, date, values: collectNoteValues() });
 }
 
+// ---------- 长物品列表:搜索跳转 + 展开全部 ----------
+// 仓储这种分类物品可能有几十上百个,"目前总库存"磁贴和"今天的记录"表格默认
+// 都只显示前 ITEM_LIST_PAGE_SIZE 个,底部一个"展开全部"提示点了才露出剩下的;
+// 配一个搜索框,打字实时列出匹配的物品名,点一个就跳过去——如果当前是收起
+// 状态,先自动展开再滚动定位,不然目标节点根本不在 DOM 里,querySelector 找
+// 不到。两个列表(磁贴/表格行)各自独立一份展开状态和渲染函数,搜索框的
+// 输入/下拉/防抖交互靠 setupItemSearch 统一处理,只是"跳转到哪、怎么展开"
+// 这一部分通过参数区分。
+const ITEM_LIST_PAGE_SIZE = 20;
+let stockSummaryExpanded = false;
+let entryTableExpanded = false;
+
+function setupItemSearch(inputEl, dropdownEl, onJump) {
+  function closeDropdown() {
+    dropdownEl.style.display = "none";
+    dropdownEl.innerHTML = "";
+  }
+  function renderMatches() {
+    const q = inputEl.value.trim().toLowerCase();
+    if (!q) { closeDropdown(); return; }
+    const matches = items.filter(it => it.name.toLowerCase().includes(q)).slice(0, 8);
+    if (!matches.length) {
+      dropdownEl.innerHTML = `<div class="item-search-empty">没有匹配的物品</div>`;
+      dropdownEl.style.display = "block";
+      return;
+    }
+    dropdownEl.innerHTML = matches.map(it => `<div class="item-search-option" data-id="${it.id}">${it.name}</div>`).join("");
+    dropdownEl.style.display = "block";
+    dropdownEl.querySelectorAll(".item-search-option").forEach(opt => {
+      // mousedown 而不是 click——input 的 blur 会比 click 先触发,把 dropdown
+      // 提前关掉,选项就点不到了;mousedown 在 blur 之前发生,能抢先处理。
+      opt.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        onJump(opt.dataset.id);
+        inputEl.value = "";
+        closeDropdown();
+      });
+    });
+  }
+  inputEl.addEventListener("input", renderMatches);
+  inputEl.addEventListener("focus", renderMatches);
+  inputEl.addEventListener("blur", closeDropdown);
+}
+
+function jumpToStockTile(itemId) {
+  if (!stockSummaryExpanded) { stockSummaryExpanded = true; renderStockSummary(); }
+  const el = document.querySelector(`#stockSummary .stock-tile[data-item-id="${itemId}"]`);
+  if (!el) return;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.classList.add("item-jump-highlight");
+  setTimeout(() => el.classList.remove("item-jump-highlight"), 1800);
+}
+
+function jumpToEntryRow(itemId) {
+  if (!entryTableExpanded) { entryTableExpanded = true; renderItemRows(); }
+  const el = document.querySelector(`#entryTableBody tr[data-item-id="${itemId}"]`);
+  if (!el) return;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.classList.add("item-jump-highlight");
+  setTimeout(() => el.classList.remove("item-jump-highlight"), 1800);
+}
+
 // ---------- 分类详情:今日录入(字段是动态的,由这个分类自己配置)
 // 表格布局:字段名在最上面一行当表头,下面一行一个物品,类似 Excel。----------
 function renderItemRows() {
@@ -1332,6 +1440,7 @@ function renderItemRows() {
   const noFields = document.getElementById("noFieldsHint");
   const calcBtn = document.getElementById("calcBtn");
   const saveDirectBtn = document.getElementById("saveDirectBtn");
+  const searchWrap = document.getElementById("entryTableSearch");
   head.innerHTML = "";
   body.innerHTML = "";
 
@@ -1339,6 +1448,7 @@ function renderItemRows() {
     noFields.style.display = "block";
     noItems.style.display = "none";
     tableWrap.style.display = "none";
+    searchWrap.style.display = "none";
     calcBtn.style.display = "none";
     saveDirectBtn.style.display = "none";
     return;
@@ -1348,25 +1458,37 @@ function renderItemRows() {
   if (items.length === 0) {
     noItems.style.display = "block";
     tableWrap.style.display = "none";
+    searchWrap.style.display = "none";
     calcBtn.style.display = "none";
     saveDirectBtn.style.display = "none";
     return;
   }
   noItems.style.display = "none";
   tableWrap.style.display = "block";
+  searchWrap.style.display = "block";
 
   head.innerHTML = `<th>物品</th>` + fields.map(f => `<th>${f.name}</th>`).join("");
 
-  items.forEach(it => {
+  const visibleItems = entryTableExpanded ? items : items.slice(0, ITEM_LIST_PAGE_SIZE);
+  visibleItems.forEach(it => {
     const prevVal = latestStockCheck[it.id];
     const nameHint = stockFieldId
       ? `<small>上次 ${prevVal !== undefined ? prevVal + it.unit : "暂无记录"}</small>`
       : `<small>${currencySymbol(it.currency)}${Number(it.price).toFixed(2)}/${it.unit}</small>`;
     const tr = document.createElement("tr");
+    tr.dataset.itemId = it.id;
     tr.innerHTML = `<td class="item-name-cell">${it.name}${nameHint}</td>` +
       fields.map(f => `<td><input type="${f.type === "number" ? "number" : "text"}" ${f.type === "number" ? 'step="1"' : ""} data-id="${it.id}" data-field="${f.id}"></td>`).join("");
     body.appendChild(tr);
   });
+
+  if (!entryTableExpanded && items.length > ITEM_LIST_PAGE_SIZE) {
+    const moreTr = document.createElement("tr");
+    moreTr.className = "item-list-more-row";
+    moreTr.innerHTML = `<td colspan="${fields.length + 1}">展开全部(还有 ${items.length - ITEM_LIST_PAGE_SIZE} 项)</td>`;
+    moreTr.addEventListener("click", () => { entryTableExpanded = true; renderItemRows(); });
+    body.appendChild(moreTr);
+  }
 
   body.querySelectorAll("input").forEach(inp => {
     inp.addEventListener("input", e => {
@@ -1533,24 +1655,30 @@ async function loadItemsAndStock() {
 function renderStockSummary() {
   const card = document.getElementById("stockSummaryCard");
   const el = document.getElementById("stockSummary");
+  const searchWrap = document.getElementById("stockSummarySearch");
   if (items.length === 0) {
     card.style.display = "none";
+    searchWrap.style.display = "none";
     return;
   }
   if (!stockFieldId) {
     card.style.display = "block";
+    searchWrap.style.display = "none";
     el.className = "";
     el.innerHTML = `<div class="empty">这个分类还没有设置"库存盘点"字段,点"管理字段"添加一个才能开始自动算库存/消耗</div>`;
     return;
   }
   card.style.display = "block";
+  searchWrap.style.display = "block";
   el.className = "stock-grid";
   el.innerHTML = "";
   const admin = isAdmin();
-  items.forEach(it => {
+  const visibleItems = stockSummaryExpanded ? items : items.slice(0, ITEM_LIST_PAGE_SIZE);
+  visibleItems.forEach(it => {
     const val = latestStockCheck[it.id];
     const tile = document.createElement("div");
     tile.className = "stock-tile";
+    tile.dataset.itemId = it.id;
     const hint = admin ? (val !== undefined ? "点击修改" : "暂无记录·点击设置") : (val !== undefined ? "" : "暂无记录");
     tile.innerHTML = `
       <div class="stock-tile-name">${it.name}</div>
@@ -1562,6 +1690,13 @@ function renderStockSummary() {
     if (admin) tile.addEventListener("click", () => editStockFor(it));
     el.appendChild(tile);
   });
+  if (!stockSummaryExpanded && items.length > ITEM_LIST_PAGE_SIZE) {
+    const moreTile = document.createElement("div");
+    moreTile.className = "stock-tile stock-tile-more";
+    moreTile.innerHTML = `<div class="stock-tile-hint">展开全部<br>(还有 ${items.length - ITEM_LIST_PAGE_SIZE} 项)</div>`;
+    moreTile.addEventListener("click", () => { stockSummaryExpanded = true; renderStockSummary(); });
+    el.appendChild(moreTile);
+  }
 }
 
 // 点"目前总库存"里的某个物品(仅管理员),直接改 total_stock 这个数字——
@@ -2321,6 +2456,23 @@ document.getElementById("saveEditBtn").addEventListener("click", async () => {
   }
 });
 
+// ---------- 物品管理:多选批量删除 ----------
+// Kevin 批量导入后发现名字导错(比如把序号列当成名称导进去了)提的需求——
+// 删几十个物品如果一个一个点"删除"要确认几十次太折腾,这里加个多选 + 一次性
+// 批量删。锁定的物品不出 checkbox——单个删除本来就会被锁定挡住,批量这边
+// 直接不给勾,而不是让人勾了却发现删不掉。
+let selectedItemIdsForDelete = new Set();
+
+function updateBulkDeleteBar() {
+  const bar = document.getElementById("itemsBulkDeleteBar");
+  const countEl = document.getElementById("itemsSelectedCount");
+  const selectAllCheckbox = document.getElementById("itemsSelectAllCheckbox");
+  const unlockedItems = items.filter(it => !it.locked);
+  bar.style.display = unlockedItems.length > 0 ? "flex" : "none";
+  countEl.textContent = selectedItemIdsForDelete.size > 0 ? `已选 ${selectedItemIdsForDelete.size} 项` : "";
+  selectAllCheckbox.checked = unlockedItems.length > 0 && unlockedItems.every(it => selectedItemIdsForDelete.has(it.id));
+}
+
 // ---------- 物品管理 ----------
 function renderManageList() {
   const el = document.getElementById("currentItemsList");
@@ -2336,17 +2488,41 @@ function renderManageList() {
       div.querySelector('[data-action="unlock"]').addEventListener("click", () => unlockItemHandler(it));
     } else {
       div.innerHTML = `
+        <input type="checkbox" class="item-select-checkbox" ${selectedItemIdsForDelete.has(it.id) ? "checked" : ""}>
         <div class="name">${it.name} <small>${it.unit} · ${currencySymbol(it.currency)}${Number(it.price).toFixed(2)}</small></div>
         <button class="btn-ghost" data-action="lock">锁定</button>
         <button class="btn-ghost" data-action="edit">编辑</button>
         <button class="btn-ghost" data-action="delete">删除</button>
       `;
+      div.querySelector(".item-select-checkbox").addEventListener("change", (e) => {
+        if (e.target.checked) selectedItemIdsForDelete.add(it.id);
+        else selectedItemIdsForDelete.delete(it.id);
+        updateBulkDeleteBar();
+      });
       div.querySelector('[data-action="lock"]').addEventListener("click", () => lockItemHandler(it));
       div.querySelector('[data-action="edit"]').addEventListener("click", () => toggleItemEdit(it, div));
       div.querySelector('[data-action="delete"]').addEventListener("click", () => deleteItemHandler(it));
     }
     el.appendChild(div);
   });
+  updateBulkDeleteBar();
+}
+
+async function deleteSelectedItemsHandler() {
+  if (selectedItemIdsForDelete.size === 0) { alert("先勾选要删除的物品。"); return; }
+  const names = items.filter(it => selectedItemIdsForDelete.has(it.id)).map(it => it.name);
+  const preview = names.slice(0, 15).join("、") + (names.length > 15 ? " 等" : "");
+  if (!confirm(`删除选中的 ${names.length} 个物品?历史记录里名字还会保留,但不能再录入它们的数据了。\n\n${preview}`)) return;
+  try {
+    const result = await apiPost("deleteItemsBulk", { categoryId: currentCategory.id, itemIds: Array.from(selectedItemIdsForDelete) });
+    selectedItemIdsForDelete.clear();
+    let msg = `已删除 ${result.deletedCount} 个`;
+    if (result.skippedLocked && result.skippedLocked.length) msg += `,跳过 ${result.skippedLocked.length} 个已锁定的`;
+    alert(msg);
+    await loadItemsAndStock();
+  } catch (err) {
+    alert("批量删除失败: " + err.message);
+  }
 }
 
 async function lockItemHandler(item) {
@@ -2709,6 +2885,23 @@ document.getElementById("toggleItemsBtn").addEventListener("click", () => {
   const el = document.getElementById("itemsManage");
   el.style.display = el.style.display === "none" ? "block" : "none";
 });
+document.getElementById("itemsSelectAllCheckbox").addEventListener("change", (e) => {
+  const unlockedItems = items.filter(it => !it.locked);
+  if (e.target.checked) unlockedItems.forEach(it => selectedItemIdsForDelete.add(it.id));
+  else selectedItemIdsForDelete.clear();
+  renderManageList();
+});
+document.getElementById("deleteSelectedItemsBtn").addEventListener("click", deleteSelectedItemsHandler);
+setupItemSearch(
+  document.getElementById("stockSummarySearchInput"),
+  document.getElementById("stockSummarySearchDropdown"),
+  jumpToStockTile,
+);
+setupItemSearch(
+  document.getElementById("entryTableSearchInput"),
+  document.getElementById("entryTableSearchDropdown"),
+  jumpToEntryRow,
+);
 
 // ---------- 启动:注册 service worker,尝试恢复上次登录,否则进登录页 ----------
 (async function boot() {
