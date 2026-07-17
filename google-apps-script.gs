@@ -1477,7 +1477,11 @@ function doPost(e) {
     // 2026-07-17 加了经理(manager)/班长(shift_leader)两级,权限严格分层
     // (管理员≥经理≥班长≥员工),见 requireLevel 上面的说明。下面每个动作要求
     // 的最低等级都来自 Kevin 核对过的那份权限对照表。
-    if (action === "createEmployee") { requireLevel(session, ROLE_LEVELS.shift_leader); return jsonResponse({ user: createEmployee(session, payload.username, payload.password, payload.displayName, payload.storeId, payload.role) }); }
+    // 建账号收回成只有管理员能做(2026-07-17 二次调整——一度放开给经理/班长,
+    // Kevin 想清楚之后决定账号创建统一由他自己管,不下放)。经理/班长/员工
+    // 现在都只能"看"同事列表(listUsers)和改角色(changeUserRole,按层级),
+    // 不能再自己建新账号。
+    if (action === "createEmployee") { requireAdmin(session); return jsonResponse({ user: createEmployee(session, payload.username, payload.password, payload.displayName, payload.storeId, payload.role) }); }
     if (action === "deleteUser") { requireLevel(session, ROLE_LEVELS.manager); deleteUserById(session, payload.userId); return jsonResponse({ status: "ok" }); }
     if (action === "resetPassword") { requireAdmin(session); resetPassword(payload.userId, payload.newPassword); return jsonResponse({ status: "ok" }); }
     if (action === "changeUserRole") { requireLevel(session, ROLE_LEVELS.shift_leader); changeUserRole(session, payload.userId, payload.newRole); return jsonResponse({ status: "ok" }); }

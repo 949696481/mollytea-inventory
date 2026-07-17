@@ -2847,12 +2847,10 @@ async function loadAccounts() {
   // 自己那家,且四级里谁都看不到管理员账号本身)——这里不用再筛一遍。
   renderAccountsList(users, storesList);
   populateStoreSelect(document.getElementById("newEmpStore"), storesList);
-  // "添加账号"整张卡片只有班长及以上能看到——员工现在虽然能看同事列表了
-  // (2026-07-17 新增),但还是不能建账号。
-  document.getElementById("addAccountCard").style.display = isShiftLeaderUp() ? "block" : "none";
-  // 角色选择框只有管理员能看到——经理/班长建的账号后端会强制成"员工"这一级,
-  // 前端就不给他们选了,免得选了别的角色却被后端悄悄改掉,看起来像 bug。
-  // 门店选择框同理:经理/班长建号的门店后端强制是自己那家,不用也不能选。
+  // "添加账号"整张卡片现在只有管理员能看到(2026-07-17 二次调整:一度放开给
+  // 班长及以上,Kevin 决定账号创建统一由他自己管,收回去了)。经理/班长/员工
+  // 现在能看同事列表、经理/班长能改角色,但都不能自己建新账号。
+  document.getElementById("addAccountCard").style.display = isAdmin() ? "block" : "none";
   document.getElementById("newEmpRoleRow").style.display = isAdmin() ? "block" : "none";
   document.getElementById("newEmpStoreRow").style.display = isAdmin() ? "block" : "none";
 }
