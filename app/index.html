@@ -663,7 +663,7 @@
       <div id="employeeUsersList"></div>
       <div class="empty" id="noEmployeesHint" style="display:none;">还没有账号</div>
     </div>
-    <div class="card">
+    <div class="card" id="addAccountCard">
       <h2>添加账号</h2>
       <div class="config-body open">
         <label>姓名</label>
@@ -866,10 +866,11 @@ function showView(name) {
   manageMode = false;
   manageBtn.textContent = "管理";
   manageBtn.style.display = "none";
-  // "账号管理"入口:管理员是从"stores"(选门店)页面进;经理/班长没有"选门店"
-  // 这一步,登录直接落在"categories"(选分类)页面,所以那个页面也要露出这个
-  // 按钮,不然经理/班长永远够不到"账号管理"。
-  accountsBtn.style.display = ((name === "stores" || name === "categories") && isShiftLeaderUp()) ? "inline-block" : "none";
+  // "账号管理"入口:四级都能进去看同事(2026-07-17 Kevin 要求员工也能互相
+  // 看到),只是页面里"添加账号"那张卡片会按权限再单独隐藏(见 loadAccounts)。
+  // 管理员是从"stores"(选门店)页面进;经理/班长/员工没有"选门店"这一步,
+  // 登录直接落在"categories"(选分类)页面,所以那个页面也要露出这个按钮。
+  accountsBtn.style.display = ((name === "stores" || name === "categories") && !!currentUser) ? "inline-block" : "none";
   logoutBtn.style.display = (name !== "login" && currentUser) ? "inline-block" : "none";
   if (name === "login") {
     backBtn.style.display = "none";
@@ -2842,10 +2843,13 @@ async function loadAccounts() {
   ]);
   const users = usersResp.users;
   const storesList = storesResp.stores;
-  // 后端 listUsers 已经按权限过滤过(管理员看全部门店,经理/班长只看自己
-  // 那家),这里不用再筛一遍角色——现在账号有四级,不是只有"employee"一种。
+  // 后端 listUsers 已经按权限过滤过(管理员看全部门店,员工/班长/经理只看
+  // 自己那家,且四级里谁都看不到管理员账号本身)——这里不用再筛一遍。
   renderAccountsList(users, storesList);
   populateStoreSelect(document.getElementById("newEmpStore"), storesList);
+  // "添加账号"整张卡片只有班长及以上能看到——员工现在虽然能看同事列表了
+  // (2026-07-17 新增),但还是不能建账号。
+  document.getElementById("addAccountCard").style.display = isShiftLeaderUp() ? "block" : "none";
   // 角色选择框只有管理员能看到——经理/班长建的账号后端会强制成"员工"这一级,
   // 前端就不给他们选了,免得选了别的角色却被后端悄悄改掉,看起来像 bug。
   // 门店选择框同理:经理/班长建号的门店后端强制是自己那家,不用也不能选。
@@ -2864,14 +2868,35 @@ function renderAccountsList(users, storesList) {
     row.className = "row";
     // 重置密码只有管理员能做;删除账号管理员能删任何人,经理只能删同店的
     // "员工"级账号(后端 deleteUserById 会再核一遍,这里只是不露出点了也会
-    // 被拒绝的按钮)。
+    // 被拒绝的按钮);改角色(员工/班长/经理互换)也只有管理员能做——2026-07-17
+    // 新加的,不下放给经理/班长,避免自己把自己或别人升级成经理这种越权。
     const canReset = isAdmin();
     const canDelete = isAdmin() || (isManagerUp() && u.role === "employee");
+    const canChangeRole = isAdmin();
+    const roleSelectHtml = canChangeRole
+      ? `<select data-action="role-select">
+          <option value="employee" ${u.role === "employee" ? "selected" : ""}>员工</option>
+          <option value="shift_leader" ${u.role === "shift_leader" ? "selected" : ""}>班长</option>
+          <option value="manager" ${u.role === "manager" ? "selected" : ""}>经理</option>
+        </select>`
+      : "";
     row.innerHTML = `
       <div class="name">${u.displayName} <small>${ROLE_LABELS[u.role] || u.role} · ${u.username} · ${store ? store.name : "门店已删除"}</small></div>
+      ${roleSelectHtml}
       ${canReset ? '<button class="btn-ghost" data-action="reset">重置密码</button>' : ""}
       ${canDelete ? '<button class="btn-ghost" data-action="delete">删除</button>' : ""}
     `;
+    const roleSelect = row.querySelector('[data-action="role-select"]');
+    if (roleSelect) roleSelect.addEventListener("change", async (e) => {
+      const newRole = e.target.value;
+      try {
+        await apiPost("changeUserRole", { userId: u.id, newRole });
+        loadAccounts();
+      } catch (err) {
+        alert("改角色失败: " + err.message);
+        e.target.value = u.role; // 失败了把下拉框选回原来的值,不留一个跟实际状态不符的假象
+      }
+    });
     const resetBtn = row.querySelector('[data-action="reset"]');
     if (resetBtn) resetBtn.addEventListener("click", async () => {
       const newPassword = prompt(`给「${u.displayName}」设置新密码:`);

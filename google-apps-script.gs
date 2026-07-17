@@ -226,8 +226,11 @@ function hasAdmin() {
   return false;
 }
 
-// 管理员看全部账号;经理/班长(2026-07-17 新增的两级)只能看自己那家门店的
-// 账号——他们本来就被锁在自己店里,没道理让他们看到别的店有谁。
+// 四级里下面三级(员工/班长/经理)互相能看到同店的其他人,但谁都看不到
+// 管理员账号本身——包括管理员自己查看列表的时候(2026-07-17 Kevin 明确要求
+// "任何角色都看不到我"),所以这里不管 session 是谁,先无条件把 role
+// === "admin" 的那一行过滤掉。除了这条,管理员看全部门店;员工/班长/经理
+// 只能看自己那家门店的账号——他们本来就被锁在自己店里,没道理看到别的店。
 function listUsers(session) {
   const sheet = getOrCreateSheet(USERS_SHEET, USERS_HEADERS);
   const rows = sheet.getDataRange().getValues();
@@ -235,10 +238,31 @@ function listUsers(session) {
   for (let i = 1; i < rows.length; i++) {
     if (!rows[i][0]) continue;
     const u = rowToUser(rows[i]);
+    if (u.role === "admin") continue;
     if (session.role !== "admin" && String(u.store_id) !== String(session.store_id)) continue;
     out.push(publicUser(u));
   }
   return out;
+}
+
+// 管理员专属:直接把一个已有账号在 员工/班长/经理 三级之间改,不动门店。
+// 不能通过这个接口把账号改成管理员——升级到管理员权限太重,不该是下拉框
+// 级别的操作;也不能改管理员账号本身的角色(系统里本来就只有一个管理员,
+// 不该被这个流程动到)。
+function changeUserRole(userId, newRole) {
+  if (newRole !== "employee" && newRole !== "shift_leader" && newRole !== "manager") {
+    throw new Error("角色不对。");
+  }
+  const sheet = getOrCreateSheet(USERS_SHEET, USERS_HEADERS);
+  const rows = sheet.getDataRange().getValues();
+  for (let i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]) === String(userId)) {
+      if (rows[i][4] === "admin") throw new Error("不能修改管理员账号的角色。");
+      sheet.getRange(i + 1, 5).setValue(newRole);
+      return;
+    }
+  }
+  throw new Error("找不到这个账号。");
 }
 
 function registerAdmin(username, password, displayName) {
@@ -1411,7 +1435,10 @@ function doGet(e) {
     if (action === "getEntryHistory") { requireStoreForCategory(session, p.categoryId); return jsonResponse({ history: getEntryHistory(p.categoryId, p.itemId, p.date) }); }
     if (action === "getDayHistoryByEditor") { requireStoreForCategory(session, p.categoryId); return jsonResponse({ entries: getDayHistoryByEditor(p.categoryId, p.date, p.editedBy) }); }
     if (action === "getExchangeRates") return jsonResponse(getExchangeRates(p.base));
-    if (action === "listUsers") { requireLevel(session, ROLE_LEVELS.shift_leader); return jsonResponse({ users: listUsers(session) }); }
+    // 查看账号列表:四级里谁都能看(员工/班长/经理互相能看到同店的人),
+    // 只要求登录——listUsers 内部自己按 session 做门店范围过滤,并且永远
+    // 把管理员那一行滤掉,不用在这里额外拦。
+    if (action === "listUsers") return jsonResponse({ users: listUsers(session) });
     return jsonResponse({ error: "unknown action" });
   } catch (err) {
     return jsonResponse({ error: err.message });
@@ -1443,6 +1470,7 @@ function doPost(e) {
     if (action === "createEmployee") { requireLevel(session, ROLE_LEVELS.shift_leader); return jsonResponse({ user: createEmployee(session, payload.username, payload.password, payload.displayName, payload.storeId, payload.role) }); }
     if (action === "deleteUser") { requireLevel(session, ROLE_LEVELS.manager); deleteUserById(session, payload.userId); return jsonResponse({ status: "ok" }); }
     if (action === "resetPassword") { requireAdmin(session); resetPassword(payload.userId, payload.newPassword); return jsonResponse({ status: "ok" }); }
+    if (action === "changeUserRole") { requireAdmin(session); changeUserRole(payload.userId, payload.newRole); return jsonResponse({ status: "ok" }); }
 
     if (action === "createStore") { requireAdmin(session); return jsonResponse({ store: createStore(payload.name) }); }
     if (action === "deleteStore") { requireAdmin(session); deleteStoreById(payload.storeId); return jsonResponse({ status: "ok" }); }
