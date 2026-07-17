@@ -226,13 +226,17 @@ function hasAdmin() {
   return false;
 }
 
-function listUsers() {
+// 管理员看全部账号;经理/班长(2026-07-17 新增的两级)只能看自己那家门店的
+// 账号——他们本来就被锁在自己店里,没道理让他们看到别的店有谁。
+function listUsers(session) {
   const sheet = getOrCreateSheet(USERS_SHEET, USERS_HEADERS);
   const rows = sheet.getDataRange().getValues();
   const out = [];
   for (let i = 1; i < rows.length; i++) {
     if (!rows[i][0]) continue;
-    out.push(publicUser(rowToUser(rows[i])));
+    const u = rowToUser(rows[i]);
+    if (session.role !== "admin" && String(u.store_id) !== String(session.store_id)) continue;
+    out.push(publicUser(u));
   }
   return out;
 }
@@ -251,25 +255,44 @@ function registerAdmin(username, password, displayName) {
   return { user: { id: id, username: username, displayName: name, role: "admin", storeId: null }, token: token };
 }
 
-function createEmployee(username, password, displayName, storeId) {
+// 管理员能建经理/班长/员工三级里的任何一个,而且能指定任意门店;经理/班长
+// (level 2+)也能建账号,但只能建"员工"这一级、门店强制是自己所在的那家,
+// 不管前端传了什么角色/门店——这两个值绝对不能信任客户端,不然一个班长
+// 改改请求参数就能给自己或者别人建一个管理员账号,或者跨店建号。
+function createEmployee(session, username, password, displayName, storeId, role) {
   username = (username || "").trim();
   if (!username || !password) throw new Error("用户名和密码不能为空。");
-  if (!storeId) throw new Error("请给这个员工账号选一个门店。");
+  if (session.role === "admin") {
+    role = (role === "manager" || role === "shift_leader") ? role : "employee";
+  } else {
+    role = "employee";
+    storeId = session.store_id;
+  }
+  if (!storeId) throw new Error("请给这个账号选一个门店。");
   if (findUserByUsername(username)) throw new Error("用户名「" + username + "」已经被使用。");
   const salt = genSalt();
   const id = "user_" + new Date().getTime();
   const name = (displayName || "").trim() || username;
   const sheet = getOrCreateSheet(USERS_SHEET, USERS_HEADERS);
-  sheet.appendRow([id, username, hashPassword(password, salt), salt, "employee", name, storeId]);
-  return { id: id, username: username, displayName: name, role: "employee", storeId: storeId };
+  sheet.appendRow([id, username, hashPassword(password, salt), salt, role, name, storeId]);
+  return { id: id, username: username, displayName: name, role: role, storeId: storeId };
 }
 
-function deleteUserById(userId) {
+// 管理员能删任何非管理员账号;经理(level 3)只能删自己店里"员工"这一级的
+// 账号——不能删同店的经理/班长(防止越权删同级或上级),也不能删别的店的。
+// 班长(level 2)权限不够,连调用这个函数的资格都没有(在 dispatch 那层就被
+// requireLevel 挡掉了)。
+function deleteUserById(session, userId) {
   const sheet = getOrCreateSheet(USERS_SHEET, USERS_HEADERS);
   const rows = sheet.getDataRange().getValues();
   for (let i = 1; i < rows.length; i++) {
     if (String(rows[i][0]) === String(userId)) {
-      if (rows[i][4] === "admin") throw new Error("不能删除管理员账号。");
+      const targetRole = rows[i][4];
+      const targetStoreId = rows[i][6];
+      if (targetRole === "admin") throw new Error("不能删除管理员账号。");
+      if (session.role !== "admin" && (targetRole !== "employee" || String(targetStoreId) !== String(session.store_id))) {
+        throw new Error("没有权限删除这个账号。");
+      }
       sheet.deleteRow(i + 1);
       return;
     }
@@ -297,7 +320,10 @@ function login(username, password) {
   }
   const token = createSession(user.id);
   const result = publicUser(user);
-  if (user.role === "employee" && user.store_id) {
+  // 经理/班长(2026-07-17 新增)跟员工一样,都是被锁在自己那家门店里的——
+  // 前端 afterLogin() 靠"是不是 admin"分流,只要不是 admin 就必须带上
+  // storeName 才能正常跳进"选择分类"页面,不能只判 role === "employee"。
+  if (user.role !== "admin" && user.store_id) {
     const store = getStoreById(user.store_id);
     result.storeName = store ? store.name : null;
   }
@@ -305,12 +331,27 @@ function login(username, password) {
 }
 
 // ---------- 权限校验 ----------
+// 四级权限,数字越大权限越高,每个操作要求一个"至少要达到"的门槛——不是每级
+// 单独配一份权限列表,是严格的层级(2026-07-17 跟 Kevin 核对过实际需求,
+// 管理员≥经理≥班长≥员工,凡是班长能做的经理和管理员也都能做,没有例外)。
+// 除了管理员,其余三级都被锁在自己所属的那一家门店里——门店范围检查见
+// requireStoreForCategory/requireStoreAccess,判断标准是"是不是 admin",
+// 不再是"是不是 employee"。
+const ROLE_LEVELS = { admin: 4, manager: 3, shift_leader: 2, employee: 1 };
+const ROLE_LABELS = { admin: "管理员", manager: "经理", shift_leader: "班长", employee: "员工" };
+
+function requireLevel(session, minLevel) {
+  if (!session || (ROLE_LEVELS[session.role] || 0) < minLevel) {
+    throw new Error("权限不够,做不了这个操作。");
+  }
+}
+
 function requireAdmin(session) {
-  if (!session || session.role !== "admin") throw new Error("只有管理员账号能做这个操作。");
+  requireLevel(session, ROLE_LEVELS.admin);
 }
 
 function requireStoreForCategory(session, categoryId) {
-  if (session.role === "employee") {
+  if (session.role !== "admin") {
     const storeId = getCategoryStoreId(categoryId);
     if (String(storeId) !== String(session.store_id)) throw new Error("没有权限操作这个门店的数据。");
   }
@@ -324,7 +365,7 @@ function requireStoreForCategory(session, categoryId) {
 // 编辑历史——不需要猜 id,listStores/listCategories 本身就会把所有门店和分类原样
 // 吐出来。管理员不受这条限制,继续能看全部门店。
 function requireStoreAccess(session, storeId) {
-  if (session.role === "employee" && String(storeId) !== String(session.store_id)) {
+  if (session.role !== "admin" && String(storeId) !== String(session.store_id)) {
     throw new Error("没有权限查看这个门店的数据。");
   }
 }
@@ -1370,7 +1411,7 @@ function doGet(e) {
     if (action === "getEntryHistory") { requireStoreForCategory(session, p.categoryId); return jsonResponse({ history: getEntryHistory(p.categoryId, p.itemId, p.date) }); }
     if (action === "getDayHistoryByEditor") { requireStoreForCategory(session, p.categoryId); return jsonResponse({ entries: getDayHistoryByEditor(p.categoryId, p.date, p.editedBy) }); }
     if (action === "getExchangeRates") return jsonResponse(getExchangeRates(p.base));
-    if (action === "listUsers") { requireAdmin(session); return jsonResponse({ users: listUsers() }); }
+    if (action === "listUsers") { requireLevel(session, ROLE_LEVELS.shift_leader); return jsonResponse({ users: listUsers(session) }); }
     return jsonResponse({ error: "unknown action" });
   } catch (err) {
     return jsonResponse({ error: err.message });
@@ -1396,38 +1437,42 @@ function doPost(e) {
 
     if (action === "logout") { deleteSession(payload.token); return jsonResponse({ status: "ok" }); }
 
-    if (action === "createEmployee") { requireAdmin(session); return jsonResponse({ user: createEmployee(payload.username, payload.password, payload.displayName, payload.storeId) }); }
-    if (action === "deleteUser") { requireAdmin(session); deleteUserById(payload.userId); return jsonResponse({ status: "ok" }); }
+    // 2026-07-17 加了经理(manager)/班长(shift_leader)两级,权限严格分层
+    // (管理员≥经理≥班长≥员工),见 requireLevel 上面的说明。下面每个动作要求
+    // 的最低等级都来自 Kevin 核对过的那份权限对照表。
+    if (action === "createEmployee") { requireLevel(session, ROLE_LEVELS.shift_leader); return jsonResponse({ user: createEmployee(session, payload.username, payload.password, payload.displayName, payload.storeId, payload.role) }); }
+    if (action === "deleteUser") { requireLevel(session, ROLE_LEVELS.manager); deleteUserById(session, payload.userId); return jsonResponse({ status: "ok" }); }
     if (action === "resetPassword") { requireAdmin(session); resetPassword(payload.userId, payload.newPassword); return jsonResponse({ status: "ok" }); }
 
     if (action === "createStore") { requireAdmin(session); return jsonResponse({ store: createStore(payload.name) }); }
     if (action === "deleteStore") { requireAdmin(session); deleteStoreById(payload.storeId); return jsonResponse({ status: "ok" }); }
 
-    if (action === "createCategory") { requireAdmin(session); return jsonResponse({ category: createCategory(payload.storeId, payload.name) }); }
-    if (action === "deleteCategory") { requireAdmin(session); deleteCategoryById(payload.categoryId); return jsonResponse({ status: "ok" }); }
-    if (action === "setSettlementCurrency") { requireAdmin(session); setSettlementCurrency(payload.categoryId, payload.currency); return jsonResponse({ status: "ok" }); }
+    if (action === "createCategory") { requireLevel(session, ROLE_LEVELS.shift_leader); requireStoreAccess(session, payload.storeId); return jsonResponse({ category: createCategory(payload.storeId, payload.name) }); }
+    if (action === "deleteCategory") { requireLevel(session, ROLE_LEVELS.shift_leader); requireStoreForCategory(session, payload.categoryId); deleteCategoryById(payload.categoryId); return jsonResponse({ status: "ok" }); }
+    if (action === "setSettlementCurrency") { requireLevel(session, ROLE_LEVELS.shift_leader); requireStoreForCategory(session, payload.categoryId); setSettlementCurrency(payload.categoryId, payload.currency); return jsonResponse({ status: "ok" }); }
 
-    if (action === "addItem") { requireAdmin(session); return jsonResponse({ item: addItem(payload.categoryId, payload.name, payload.unit, payload.price, payload.currency, payload.startingStock) }); }
-    if (action === "addItemsBulk") { requireAdmin(session); return jsonResponse(addItemsBulk(payload.categoryId, payload.items)); }
-    if (action === "aiParseImportRows") { requireAdmin(session); return jsonResponse(aiParseImportRows(payload.rawRows)); }
-    if (action === "updateItem") { requireAdmin(session); updateItem(payload.categoryId, payload.itemId, payload.name, payload.unit, payload.price, payload.currency); return jsonResponse({ status: "ok" }); }
-    if (action === "setTotalStock") { requireAdmin(session); setTotalStock(payload.categoryId, payload.itemId, payload.value); return jsonResponse({ status: "ok" }); }
-    if (action === "deleteItem") { requireAdmin(session); deleteItemById(payload.categoryId, payload.itemId); return jsonResponse({ status: "ok" }); }
-    if (action === "deleteItemsBulk") { requireAdmin(session); return jsonResponse(deleteItemsBulk(payload.categoryId, payload.itemIds)); }
-    if (action === "lockItem") { requireAdmin(session); setItemLocked(payload.categoryId, payload.itemId, true); return jsonResponse({ status: "ok" }); }
+    if (action === "addItem") { requireLevel(session, ROLE_LEVELS.shift_leader); requireStoreForCategory(session, payload.categoryId); return jsonResponse({ item: addItem(payload.categoryId, payload.name, payload.unit, payload.price, payload.currency, payload.startingStock) }); }
+    if (action === "addItemsBulk") { requireLevel(session, ROLE_LEVELS.shift_leader); requireStoreForCategory(session, payload.categoryId); return jsonResponse(addItemsBulk(payload.categoryId, payload.items)); }
+    if (action === "aiParseImportRows") { requireLevel(session, ROLE_LEVELS.shift_leader); return jsonResponse(aiParseImportRows(payload.rawRows)); }
+    if (action === "updateItem") { requireLevel(session, ROLE_LEVELS.shift_leader); requireStoreForCategory(session, payload.categoryId); updateItem(payload.categoryId, payload.itemId, payload.name, payload.unit, payload.price, payload.currency); return jsonResponse({ status: "ok" }); }
+    if (action === "setTotalStock") { requireLevel(session, ROLE_LEVELS.shift_leader); requireStoreForCategory(session, payload.categoryId); setTotalStock(payload.categoryId, payload.itemId, payload.value); return jsonResponse({ status: "ok" }); }
+    if (action === "deleteItem") { requireLevel(session, ROLE_LEVELS.shift_leader); requireStoreForCategory(session, payload.categoryId); deleteItemById(payload.categoryId, payload.itemId); return jsonResponse({ status: "ok" }); }
+    if (action === "deleteItemsBulk") { requireLevel(session, ROLE_LEVELS.shift_leader); requireStoreForCategory(session, payload.categoryId); return jsonResponse(deleteItemsBulk(payload.categoryId, payload.itemIds)); }
+    if (action === "lockItem") { requireLevel(session, ROLE_LEVELS.manager); requireStoreForCategory(session, payload.categoryId); setItemLocked(payload.categoryId, payload.itemId, true); return jsonResponse({ status: "ok" }); }
     if (action === "unlockItem") {
-      requireAdmin(session);
+      requireLevel(session, ROLE_LEVELS.manager);
+      requireStoreForCategory(session, payload.categoryId);
       verifyCurrentPassword(session, payload.password);
       setItemLocked(payload.categoryId, payload.itemId, false);
       return jsonResponse({ status: "ok" });
     }
 
-    if (action === "addField") { requireAdmin(session); return jsonResponse({ field: addField(payload.categoryId, payload.name, payload.fieldType, payload.role) }); }
-    if (action === "deleteField") { requireAdmin(session); deleteField(payload.categoryId, payload.fieldId); return jsonResponse({ status: "ok" }); }
-    if (action === "reorderFields") { requireAdmin(session); reorderFields(payload.categoryId, payload.fieldIds); return jsonResponse({ status: "ok" }); }
+    if (action === "addField") { requireLevel(session, ROLE_LEVELS.shift_leader); requireStoreForCategory(session, payload.categoryId); return jsonResponse({ field: addField(payload.categoryId, payload.name, payload.fieldType, payload.role) }); }
+    if (action === "deleteField") { requireLevel(session, ROLE_LEVELS.shift_leader); requireStoreForCategory(session, payload.categoryId); deleteField(payload.categoryId, payload.fieldId); return jsonResponse({ status: "ok" }); }
+    if (action === "reorderFields") { requireLevel(session, ROLE_LEVELS.shift_leader); requireStoreForCategory(session, payload.categoryId); reorderFields(payload.categoryId, payload.fieldIds); return jsonResponse({ status: "ok" }); }
 
-    if (action === "addNoteField") { requireAdmin(session); return jsonResponse({ noteField: addNoteField(payload.categoryId, payload.name) }); }
-    if (action === "deleteNoteField") { requireAdmin(session); deleteNoteField(payload.categoryId, payload.noteId); return jsonResponse({ status: "ok" }); }
+    if (action === "addNoteField") { requireLevel(session, ROLE_LEVELS.shift_leader); requireStoreForCategory(session, payload.categoryId); return jsonResponse({ noteField: addNoteField(payload.categoryId, payload.name) }); }
+    if (action === "deleteNoteField") { requireLevel(session, ROLE_LEVELS.shift_leader); requireStoreForCategory(session, payload.categoryId); deleteNoteField(payload.categoryId, payload.noteId); return jsonResponse({ status: "ok" }); }
     if (action === "saveNoteEntries") {
       requireStoreForCategory(session, payload.categoryId);
       saveNoteEntries(payload.categoryId, payload.date, payload.values, session.display_name || session.username);
@@ -1442,17 +1487,18 @@ function doPost(e) {
     }
 
     if (action === "deleteLogDay") {
-      requireAdmin(session);
+      requireLevel(session, ROLE_LEVELS.manager);
+      requireStoreForCategory(session, payload.categoryId);
       deleteLogDay(payload.categoryId, payload.date);
       return jsonResponse({ status: "ok" });
     }
 
     if (action === "deleteLogDayByEditor") {
-      // 员工只能删自己录入/最后编辑的那部分(2026-07-15 开放,原来是 requireAdmin
-      // 硬门槛,员工完全没有删除入口)——admin 不受限,员工必须传自己的名字,
-      // 服务器端强制核对,不能只靠前端把按钮藏起来防止删别人的记录。
+      // 员工只能删自己录入/最后编辑的那部分;班长(level 2)开始就能删这一天
+      // 任何人的记录了,不用再是自己录的——服务器端强制核对角色等级,不能只靠
+      // 前端把按钮藏起来防止越权删除。
       requireStoreForCategory(session, payload.categoryId);
-      if (session.role !== "admin" && String(payload.editedBy) !== String(session.display_name || session.username)) {
+      if ((ROLE_LEVELS[session.role] || 0) < ROLE_LEVELS.shift_leader && String(payload.editedBy) !== String(session.display_name || session.username)) {
         throw new Error("只能删除自己录入的记录。");
       }
       deleteLogDayByEditor(payload.categoryId, payload.date, payload.editedBy);

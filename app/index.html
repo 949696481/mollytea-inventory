@@ -654,25 +654,37 @@
 
   </div>
 
-  <!-- 账号管理(仅管理员):添加/删除员工账号,重置密码 -->
+  <!-- 账号管理(班长及以上可见):添加/删除账号,重置密码。班长/经理只能建
+       "员工"这一级、只能管自己门店的账号,管理员能建经理/班长/员工三级、
+       能管所有门店——具体哪些控件露出来由 loadAccounts() 按当前用户的角色决定。 -->
   <div class="view" id="view-accounts" style="display:none;">
     <div class="card">
-      <h2>员工账号</h2>
+      <h2>门店账号</h2>
       <div id="employeeUsersList"></div>
-      <div class="empty" id="noEmployeesHint" style="display:none;">还没有员工账号</div>
+      <div class="empty" id="noEmployeesHint" style="display:none;">还没有账号</div>
     </div>
     <div class="card">
-      <h2>添加员工账号</h2>
+      <h2>添加账号</h2>
       <div class="config-body open">
-        <label>员工姓名</label>
+        <label>姓名</label>
         <input id="newEmpDisplayName" placeholder="比如 小李">
         <label>用户名</label>
         <input id="newEmpUsername" placeholder="登录用户名">
         <label>密码</label>
         <input id="newEmpPassword" type="password" placeholder="设置密码">
-        <label>所属门店</label>
-        <select id="newEmpStore"></select>
-        <button class="btn-secondary" id="addEmployeeBtn">创建员工账号</button>
+        <div id="newEmpRoleRow" style="display:none;">
+          <label>角色</label>
+          <select id="newEmpRole">
+            <option value="employee">员工</option>
+            <option value="shift_leader">班长</option>
+            <option value="manager">经理</option>
+          </select>
+        </div>
+        <div id="newEmpStoreRow">
+          <label>所属门店</label>
+          <select id="newEmpStore"></select>
+        </div>
+        <button class="btn-secondary" id="addEmployeeBtn">创建账号</button>
         <div class="status-line" id="addEmployeeStatus"></div>
       </div>
     </div>
@@ -724,7 +736,15 @@ let exchangeRates = null;      // {date, rates:{USD:0.14,...}} 1 结算货币 = 
 let ratesError = "";           // 汇率拉取失败时的提示
 let currentUser = null;        // {id, username, displayName, role, storeId, storeName?}
 let authToken = null;          // 登录后端发的 session token,每次请求都要带上
-const isAdmin = () => !!currentUser && currentUser.role === "admin";
+// 四级权限,严格层级(管理员≥经理≥班长≥员工),跟 google-apps-script.gs 里的
+// ROLE_LEVELS 是同一份定义——前端这边只用来控制按钮显示/隐藏,真正拦权限的
+// 是后端,前端隐藏只是不让人误点。
+const ROLE_LEVELS = { admin: 4, manager: 3, shift_leader: 2, employee: 1 };
+const ROLE_LABELS = { admin: "管理员", manager: "经理", shift_leader: "班长", employee: "员工" };
+function myLevel() { return currentUser ? (ROLE_LEVELS[currentUser.role] || 0) : 0; }
+const isAdmin = () => myLevel() >= ROLE_LEVELS.admin;
+const isManagerUp = () => myLevel() >= ROLE_LEVELS.manager;
+const isShiftLeaderUp = () => myLevel() >= ROLE_LEVELS.shift_leader;
 // 跟后端存 edited_by 时用的值保持一致(session.display_name || session.username,
 // 见 google-apps-script.gs 的 saveLogEntries/saveNoteEntries 分支)——用来判断
 // "某一天某个人的记录"是不是当前登录的这个人自己的,决定要不要显示删除按钮。
@@ -823,13 +843,13 @@ const todayStr = () => {
 let currentDayLabel = "";
 
 function applyRoleUI() {
-  const admin = isAdmin();
+  const canManage = isShiftLeaderUp();
   const manageFieldsBtn = document.getElementById("manageFieldsBtn");
   const itemsCard = document.getElementById("itemsSettingsCard");
   const currencySelect = document.getElementById("settlementCurrencySelect");
-  if (manageFieldsBtn) manageFieldsBtn.style.display = admin ? "inline-block" : "none";
-  if (itemsCard) itemsCard.style.display = admin ? "block" : "none";
-  if (currencySelect) currencySelect.disabled = !admin;
+  if (manageFieldsBtn) manageFieldsBtn.style.display = canManage ? "inline-block" : "none";
+  if (itemsCard) itemsCard.style.display = canManage ? "block" : "none";
+  if (currencySelect) currencySelect.disabled = !canManage;
 }
 
 function showView(name) {
@@ -846,7 +866,10 @@ function showView(name) {
   manageMode = false;
   manageBtn.textContent = "管理";
   manageBtn.style.display = "none";
-  accountsBtn.style.display = (name === "stores" && isAdmin()) ? "inline-block" : "none";
+  // "账号管理"入口:管理员是从"stores"(选门店)页面进;经理/班长没有"选门店"
+  // 这一步,登录直接落在"categories"(选分类)页面,所以那个页面也要露出这个
+  // 按钮,不然经理/班长永远够不到"账号管理"。
+  accountsBtn.style.display = ((name === "stores" || name === "categories") && isShiftLeaderUp()) ? "inline-block" : "none";
   logoutBtn.style.display = (name !== "login" && currentUser) ? "inline-block" : "none";
   if (name === "login") {
     backBtn.style.display = "none";
@@ -859,7 +882,7 @@ function showView(name) {
     subtitle.textContent = currentUser ? `${currentUser.displayName} · 选择门店` : "选择门店";
   } else if (name === "categories") {
     backBtn.style.display = isAdmin() ? "inline-block" : "none";
-    manageBtn.style.display = isAdmin() ? "inline-block" : "none";
+    manageBtn.style.display = isShiftLeaderUp() ? "inline-block" : "none";
     title.textContent = currentStore.name;
     subtitle.textContent = "选择分类";
   } else if (name === "detail") {
@@ -876,7 +899,7 @@ function showView(name) {
     backBtn.style.display = "inline-block";
     manageBtn.style.display = "none";
     title.textContent = "账号管理";
-    subtitle.textContent = "员工账号";
+    subtitle.textContent = "门店账号";
   }
   applyRoleUI();
 }
@@ -890,8 +913,10 @@ document.getElementById("backBtn").addEventListener("click", () => {
     showView("categories");
     loadCategories();
   } else if (document.getElementById("view-accounts").style.display !== "none") {
-    showView("stores");
-    loadStores();
+    // 管理员是从"选门店"页面进"账号管理"的,回退去那边;经理/班长登录直接
+    // 落在"选分类"页面,没有"选门店"这一步可回,回退去"选分类"才对。
+    if (isAdmin()) { showView("stores"); loadStores(); }
+    else { showView("categories"); loadCategories(); }
   } else if (document.getElementById("view-categories").style.display !== "none") {
     showView("stores");
     loadStores();
@@ -1482,11 +1507,16 @@ function renderItemRows() {
     body.appendChild(tr);
   });
 
-  if (!entryTableExpanded && items.length > ITEM_LIST_PAGE_SIZE) {
+  if (items.length > ITEM_LIST_PAGE_SIZE) {
     const moreTr = document.createElement("tr");
     moreTr.className = "item-list-more-row";
-    moreTr.innerHTML = `<td colspan="${fields.length + 1}">展开全部(还有 ${items.length - ITEM_LIST_PAGE_SIZE} 项)</td>`;
-    moreTr.addEventListener("click", () => { entryTableExpanded = true; renderItemRows(); });
+    if (entryTableExpanded) {
+      moreTr.innerHTML = `<td colspan="${fields.length + 1}">收起</td>`;
+      moreTr.addEventListener("click", () => { entryTableExpanded = false; renderItemRows(); });
+    } else {
+      moreTr.innerHTML = `<td colspan="${fields.length + 1}">展开全部(还有 ${items.length - ITEM_LIST_PAGE_SIZE} 项)</td>`;
+      moreTr.addEventListener("click", () => { entryTableExpanded = true; renderItemRows(); });
+    }
     body.appendChild(moreTr);
   }
 
@@ -1672,29 +1702,34 @@ function renderStockSummary() {
   searchWrap.style.display = "block";
   el.className = "stock-grid";
   el.innerHTML = "";
-  const admin = isAdmin();
+  const canEdit = isShiftLeaderUp();
   const visibleItems = stockSummaryExpanded ? items : items.slice(0, ITEM_LIST_PAGE_SIZE);
   visibleItems.forEach(it => {
     const val = latestStockCheck[it.id];
     const tile = document.createElement("div");
     tile.className = "stock-tile";
     tile.dataset.itemId = it.id;
-    const hint = admin ? (val !== undefined ? "点击修改" : "暂无记录·点击设置") : (val !== undefined ? "" : "暂无记录");
+    const hint = canEdit ? (val !== undefined ? "点击修改" : "暂无记录·点击设置") : (val !== undefined ? "" : "暂无记录");
     tile.innerHTML = `
       <div class="stock-tile-name">${it.name}</div>
       <div class="stock-tile-value">${val !== undefined ? val : "--"}<span class="unit">${it.unit}</span></div>
       <div class="stock-tile-hint">${hint}</div>
     `;
-    // 总库存只有管理员能直接改——员工正常录入当天盘点(走"今天的记录"表格)
+    // 直接改总库存要求班长及以上——员工正常录入当天盘点(走"今天的记录"表格)
     // 照样会自动把新数值推进总库存,只是不能像这样绕开正常流程直接改这个数字。
-    if (admin) tile.addEventListener("click", () => editStockFor(it));
+    if (canEdit) tile.addEventListener("click", () => editStockFor(it));
     el.appendChild(tile);
   });
-  if (!stockSummaryExpanded && items.length > ITEM_LIST_PAGE_SIZE) {
+  if (items.length > ITEM_LIST_PAGE_SIZE) {
     const moreTile = document.createElement("div");
     moreTile.className = "stock-tile stock-tile-more";
-    moreTile.innerHTML = `<div class="stock-tile-hint">展开全部<br>(还有 ${items.length - ITEM_LIST_PAGE_SIZE} 项)</div>`;
-    moreTile.addEventListener("click", () => { stockSummaryExpanded = true; renderStockSummary(); });
+    if (stockSummaryExpanded) {
+      moreTile.innerHTML = `<div class="stock-tile-hint">收起</div>`;
+      moreTile.addEventListener("click", () => { stockSummaryExpanded = false; renderStockSummary(); });
+    } else {
+      moreTile.innerHTML = `<div class="stock-tile-hint">展开全部<br>(还有 ${items.length - ITEM_LIST_PAGE_SIZE} 项)</div>`;
+      moreTile.addEventListener("click", () => { stockSummaryExpanded = true; renderStockSummary(); });
+    }
     el.appendChild(moreTile);
   }
 }
@@ -2139,7 +2174,7 @@ function openDayDetail(date, dayRows) {
   showView("day-detail");
   document.getElementById("dayDetailTitle").textContent = currentDayLabel;
   const dayNotes = noteLogByDate[date] || [];
-  document.getElementById("deleteDayBtn").style.display = (isAdmin() && (dayRows.length > 0 || dayNotes.length > 0)) ? "inline-block" : "none";
+  document.getElementById("deleteDayBtn").style.display = (isManagerUp() && (dayRows.length > 0 || dayNotes.length > 0)) ? "inline-block" : "none";
   const listEl = document.getElementById("dayDetailList");
   listEl.innerHTML = "";
 
@@ -2195,16 +2230,16 @@ function openDayDetail(date, dayRows) {
       label.style.cssText = "font-weight:700;color:var(--ink);";
       label.textContent = (group.editor || "未知") + (latestLabel ? ` 最后编辑于 ${latestLabel}` : "");
       header.appendChild(label);
-      // 谁能删这一组:admin 能删任何人的;员工(2026-07-15 开放)只能删自己那组
-      // ——不管当天是不是只有一个人录入,都该看到这个按钮,不该因为
-      // "只有一组"就完全不渲染(以前的条件是 showEditorHeaders && isAdmin(),
-      // 单人录入的天永远看不到删除入口)。
-      const canDeleteGroup = isAdmin() || group.editor === myEditorName();
+      // 谁能删这一组:班长及以上能删任何人的(2026-07-17 权限分级后,不再是
+      // admin 专属);员工只能删自己那组——不管当天是不是只有一个人录入,
+      // 都该看到这个按钮,不该因为"只有一组"就完全不渲染(以前的条件是
+      // showEditorHeaders && isAdmin(),单人录入的天永远看不到删除入口)。
+      const canDeleteGroup = isShiftLeaderUp() || group.editor === myEditorName();
       if (canDeleteGroup) {
         const delBtn = document.createElement("button");
         delBtn.className = "btn-ghost";
         delBtn.style.cssText = "font-size:12px;padding:2px 8px;";
-        delBtn.textContent = isAdmin() ? "删除这部分" : "删除我的记录";
+        delBtn.textContent = isShiftLeaderUp() ? "删除这部分" : "删除我的记录";
         delBtn.addEventListener("click", () => deleteDayByEditor(group.editor, group.rows.length));
         header.appendChild(delBtn);
       }
@@ -2269,8 +2304,8 @@ function openDayDetail(date, dayRows) {
 
       // 每个人一个"查看编辑历史",放在这个人这一整块(进货+消耗)的最下面——
       // 不再每个物品各自一个,点开显示这个人当天动过的所有物品,不用一个个点开找。
-      // admin 能看任何人的;员工能看自己的(方便核对自己到底改过什么)。
-      if (isAdmin() || group.editor === myEditorName()) appendGroupHistoryToggle(listEl, group);
+      // 班长及以上能看任何人的;员工能看自己的(方便核对自己到底改过什么)。
+      if (isShiftLeaderUp() || group.editor === myEditorName()) appendGroupHistoryToggle(listEl, group);
     });
     const totalRow = document.createElement("div");
     totalRow.className = "item-line";
@@ -2480,17 +2515,20 @@ function renderManageList() {
   items.forEach(it => {
     const div = document.createElement("div");
     div.className = "row";
+    // 锁定/解锁要求经理及以上(班长做不了,见权限对照表)——这张卡片本身
+    // 已经是班长起才看得到(applyRoleUI 那边控制),这里再单独多挡一道。
     if (it.locked) {
       div.innerHTML = `
         <div class="name">🔒 ${it.name} <small>${it.unit} · ${currencySymbol(it.currency)}${Number(it.price).toFixed(2)}</small></div>
-        <button class="btn-ghost" data-action="unlock">解锁</button>
+        ${isManagerUp() ? '<button class="btn-ghost" data-action="unlock">解锁</button>' : ""}
       `;
-      div.querySelector('[data-action="unlock"]').addEventListener("click", () => unlockItemHandler(it));
+      const unlockBtn = div.querySelector('[data-action="unlock"]');
+      if (unlockBtn) unlockBtn.addEventListener("click", () => unlockItemHandler(it));
     } else {
       div.innerHTML = `
         <input type="checkbox" class="item-select-checkbox" ${selectedItemIdsForDelete.has(it.id) ? "checked" : ""}>
         <div class="name">${it.name} <small>${it.unit} · ${currencySymbol(it.currency)}${Number(it.price).toFixed(2)}</small></div>
-        <button class="btn-ghost" data-action="lock">锁定</button>
+        ${isManagerUp() ? '<button class="btn-ghost" data-action="lock">锁定</button>' : ""}
         <button class="btn-ghost" data-action="edit">编辑</button>
         <button class="btn-ghost" data-action="delete">删除</button>
       `;
@@ -2499,7 +2537,8 @@ function renderManageList() {
         else selectedItemIdsForDelete.delete(it.id);
         updateBulkDeleteBar();
       });
-      div.querySelector('[data-action="lock"]').addEventListener("click", () => lockItemHandler(it));
+      const lockBtn = div.querySelector('[data-action="lock"]');
+      if (lockBtn) lockBtn.addEventListener("click", () => lockItemHandler(it));
       div.querySelector('[data-action="edit"]').addEventListener("click", () => toggleItemEdit(it, div));
       div.querySelector('[data-action="delete"]').addEventListener("click", () => deleteItemHandler(it));
     }
@@ -2803,25 +2842,38 @@ async function loadAccounts() {
   ]);
   const users = usersResp.users;
   const storesList = storesResp.stores;
-  renderAccountsList(users.filter(u => u.role === "employee"), storesList);
+  // 后端 listUsers 已经按权限过滤过(管理员看全部门店,经理/班长只看自己
+  // 那家),这里不用再筛一遍角色——现在账号有四级,不是只有"employee"一种。
+  renderAccountsList(users, storesList);
   populateStoreSelect(document.getElementById("newEmpStore"), storesList);
+  // 角色选择框只有管理员能看到——经理/班长建的账号后端会强制成"员工"这一级,
+  // 前端就不给他们选了,免得选了别的角色却被后端悄悄改掉,看起来像 bug。
+  // 门店选择框同理:经理/班长建号的门店后端强制是自己那家,不用也不能选。
+  document.getElementById("newEmpRoleRow").style.display = isAdmin() ? "block" : "none";
+  document.getElementById("newEmpStoreRow").style.display = isAdmin() ? "block" : "none";
 }
 
-function renderAccountsList(employees, storesList) {
+function renderAccountsList(users, storesList) {
   const el = document.getElementById("employeeUsersList");
   const emptyHint = document.getElementById("noEmployeesHint");
   el.innerHTML = "";
-  emptyHint.style.display = employees.length === 0 ? "block" : "none";
-  employees.forEach(u => {
+  emptyHint.style.display = users.length === 0 ? "block" : "none";
+  users.forEach(u => {
     const store = storesList.find(s => s.id === u.storeId);
     const row = document.createElement("div");
     row.className = "row";
+    // 重置密码只有管理员能做;删除账号管理员能删任何人,经理只能删同店的
+    // "员工"级账号(后端 deleteUserById 会再核一遍,这里只是不露出点了也会
+    // 被拒绝的按钮)。
+    const canReset = isAdmin();
+    const canDelete = isAdmin() || (isManagerUp() && u.role === "employee");
     row.innerHTML = `
-      <div class="name">${u.displayName} <small>${u.username} · ${store ? store.name : "门店已删除"}</small></div>
-      <button class="btn-ghost" data-action="reset">重置密码</button>
-      <button class="btn-ghost" data-action="delete">删除</button>
+      <div class="name">${u.displayName} <small>${ROLE_LABELS[u.role] || u.role} · ${u.username} · ${store ? store.name : "门店已删除"}</small></div>
+      ${canReset ? '<button class="btn-ghost" data-action="reset">重置密码</button>' : ""}
+      ${canDelete ? '<button class="btn-ghost" data-action="delete">删除</button>' : ""}
     `;
-    row.querySelector('[data-action="reset"]').addEventListener("click", async () => {
+    const resetBtn = row.querySelector('[data-action="reset"]');
+    if (resetBtn) resetBtn.addEventListener("click", async () => {
       const newPassword = prompt(`给「${u.displayName}」设置新密码:`);
       if (!newPassword) return;
       try {
@@ -2831,10 +2883,15 @@ function renderAccountsList(employees, storesList) {
         alert("重置失败: " + err.message);
       }
     });
-    row.querySelector('[data-action="delete"]').addEventListener("click", async () => {
-      if (!confirm(`删除员工账号「${u.displayName}」?`)) return;
-      await apiPost("deleteUser", { userId: u.id });
-      loadAccounts();
+    const deleteBtn = row.querySelector('[data-action="delete"]');
+    if (deleteBtn) deleteBtn.addEventListener("click", async () => {
+      if (!confirm(`删除账号「${u.displayName}」(${ROLE_LABELS[u.role] || u.role})?`)) return;
+      try {
+        await apiPost("deleteUser", { userId: u.id });
+        loadAccounts();
+      } catch (err) {
+        alert("删除失败: " + err.message);
+      }
     });
     el.appendChild(row);
   });
@@ -2845,10 +2902,11 @@ document.getElementById("addEmployeeBtn").addEventListener("click", async () => 
   const username = document.getElementById("newEmpUsername").value.trim();
   const password = document.getElementById("newEmpPassword").value;
   const storeId = document.getElementById("newEmpStore").value;
+  const role = isAdmin() ? document.getElementById("newEmpRole").value : "employee";
   const statusEl = document.getElementById("addEmployeeStatus");
   if (!username || !password) { statusEl.className = "status-line error"; statusEl.textContent = "请输入用户名和密码"; return; }
   try {
-    await apiPost("createEmployee", { username, password, displayName, storeId });
+    await apiPost("createEmployee", { username, password, displayName, storeId, role });
     document.getElementById("newEmpDisplayName").value = "";
     document.getElementById("newEmpUsername").value = "";
     document.getElementById("newEmpPassword").value = "";
